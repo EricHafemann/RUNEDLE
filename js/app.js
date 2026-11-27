@@ -196,6 +196,29 @@
     return SPELLS[id];
   }
 
+  /* ícones atuais das habilidades (arquivos do cliente, via CommunityDragon). status: loading | online | offline */
+  const CD = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default';
+  const CD_ICONS = {};
+
+  function getCDIcons(id) {
+    if (CD_ICONS[id]) return CD_ICONS[id];
+    const key = typeof CHAMPION_KEYS !== 'undefined' && CHAMPION_KEYS[id];
+    if (!key) return (CD_ICONS[id] = { status: 'offline' });
+    CD_ICONS[id] = { status: 'loading' };
+    fetchJSON(`${CD}/v1/champions/${key}.json`)
+      .then((json) => {
+        const icons = {};
+        for (const sp of json.spells || []) {
+          const k = String(sp.spellKey || '').toUpperCase();
+          if (sp.abilityIconPath && 'QWER'.includes(k) && k) icons[k] = `${CD}/${sp.abilityIconPath.replace('/lol-game-data/assets/', '').toLowerCase()}`;
+        }
+        CD_ICONS[id] = Object.keys(icons).length === 4 ? { status: 'online', icons } : { status: 'offline' };
+      })
+      .catch(() => { CD_ICONS[id] = { status: 'offline' }; })
+      .finally(() => render());
+    return CD_ICONS[id];
+  }
+
   /* skins (Data Dragon). status: loading | online | offline */
   const SKINS = {};
   let ddVersion = null;
@@ -266,6 +289,8 @@
     share: svg('<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>'),
     close: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
     fire: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5-1.5 5-1.5 8 0 1.4 1 2.5 2.3 2.5 1.5 0 2.4-1.2 2.2-3 2.4 1.7 4 4.3 4 7.1C19 20.3 15.9 23 12 23s-7-2.7-7-6.4C5 11.2 10.4 8.6 12 2Z"/></svg>',
+    star: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#0ac8b9" d="M12 2 15 9l7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z"/></svg>',
+    clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
     flag: svg('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
     up: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
     down: svg('<path d="M12 5v14M6 13l6 6 6-6"/>'),
@@ -369,7 +394,8 @@
       heading: 'De qual campeão é esta habilidade?',
       clue: (g, t) => {
         const d = getSpells(t.id);
-        if (d.status === 'loading') return spinner('Carregando habilidade…');
+        const cd = getCDIcons(t.id);
+        if (d.status === 'loading' || cd.status === 'loading') return spinner('Carregando habilidade…');
         if (d.status === 'error') return errorBox('Não foi possível carregar a habilidade.', t.id);
         const { keyIdx, rotation } = abilitySeed(g.dateKey);
         const spell = d.data.spells[keyIdx];
@@ -388,7 +414,8 @@
         } else {
           footer = `<p style="margin:12px 0 0"><b class="title" style="font-size:18px;margin-right:8px">${KEYS[keyIdx]}</b>${esc(spell.name)}</p>`;
         }
-        return `<div class="ability-frame"><img src="${spell.img}" alt="Ícone da habilidade" style="${style}"></div>${footer}`;
+        const src = cd.status === 'online' ? cd.icons[KEYS[keyIdx]] : spell.img;
+        return `<div class="ability-frame"><img src="${esc(src)}" alt="Ícone da habilidade" style="${style}" data-ability data-champ="${esc(t.id)}"></div>${footer}`;
       },
       hints: (t) => [{ label: 'Posição', at: 5, html: `<p style="margin:0">${esc(t.positions.join(' · '))}</p>` }],
       bonus: (g, t) => {
@@ -566,10 +593,11 @@
     const h = location.hash.replace('#', '');
     if (MODE_BY_ID[h]) return { name: 'mode', mode: h, key: currentKey };
     if (h === 'infinito') return { name: 'infinite' };
+    if (h === 'x1' || /^x1-[A-Za-z0-9]{4,6}$/.test(h)) return { name: 'x1', room: h.length > 2 ? h.slice(3).toUpperCase() : null };
     if (h === 'calendario') return { name: 'calendar' };
     const m = /^dia-(\d{4}-\d{2}-\d{2})-(\w+)$/.exec(h);
     if (m && isValidKey(m[1]) && MODE_BY_ID[m[2]] && m[1] >= CAL_START && m[1] <= currentKey) return { name: 'mode', mode: m[2], key: m[1] };
-    return { name: 'home' };
+    return { name: 'mode', mode: 'classic', key: currentKey }; // entrada: direto no Classic
   }
 
   const dayHash = (key, mode) => (key === currentKey ? `#${mode}` : `#dia-${key}-${mode}`);
@@ -584,103 +612,129 @@
    * Renderização
    * ======================================================= */
   const app = $('#app');
+  const views = {}; // telas extras registradas por outros scripts (ex.: X1)
 
   function render() {
-    renderHeader();
+    renderShell();
     let html;
-    if (route.name === 'home') html = homeHTML();
-    else if (route.name === 'calendar') html = calendarHTML();
+    if (route.name === 'calendar') html = calendarHTML();
+    else if (route.name === 'x1') html = views.x1 ? views.x1.html(route) : '<div class="frame notice">Carregando o X1…</div>';
     else html = sessionHTML(currentSession());
     app.innerHTML = html;
+    app.classList.toggle('enter', !!view.enter);
+    view.enter = false;
     if (route.name === 'calendar') bindCalendar();
-    else if (route.name !== 'home') bindSession(currentSession());
+    else if (route.name === 'x1') { if (views.x1) views.x1.bind(route); }
+    else bindSession(currentSession());
     view.animateIdx = -1; // só a tentativa recém-feita anima
   }
 
-  function renderHeader() {
-    const st = dailyStreak();
-    const badge = $('#streak-badge');
-    badge.innerHTML = `${ICON.fire}<b>${st.current}</b>`;
-    badge.className = `streak-badge ${st.current ? 'on' : ''} ${st.wonToday ? 'today' : ''}`;
-    badge.title = `Sequência diária: ${plural(st.current, 'dia')}`;
-    document.body.classList.toggle('in-mode', route.name !== 'home');
-    $('#btn-home').hidden = route.name === 'home';
-    const tabs = $('#mode-tabs');
-    const showTabs = route.name === 'mode' && route.key === currentKey;
-    tabs.hidden = !showTabs;
-    if (!showTabs) return;
-    tabs.innerHTML = MODES.map((m) => {
-      const s = loadGame(m.id, currentKey).status;
-      const active = route.mode === m.id;
-      return `<a href="#${m.id}" class="mode-tab ${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} title="${m.name}">
-        ${ICON[m.id]}<span class="lbl">${m.name}</span>${s !== 'playing' ? `<span class="dot ${s}"></span>` : ''}</a>`;
-    }).join('');
+  /* fundo do palco: arte desfocada que nunca é a resposta de nenhum modo do dia */
+  function stageBackground() {
+    const banned = new Set(MODES.map((m) => pickDaily(m.pool, m.id, currentKey).id));
+    let key = currentKey;
+    if (route.name === 'infinite') { const r = read('inf:round', null); if (r) { banned.add(r.targetId); key = r.dateKey; } }
+    if (route.name === 'mode' && route.key !== currentKey) { MODES.forEach((m) => banned.add(pickDaily(m.pool, m.id, route.key).id)); key = route.key; }
+    const pool = CHAMPIONS.filter((c) => !banned.has(c.id));
+    return pool[hash(`bg:${key}`) % pool.length].id;
   }
 
-  function streakCard() {
+  function renderShell() {
     const st = dailyStreak();
+    const wins = MODES.reduce((n, m) => n + loadStats(m.id).wins, 0) + loadInf().wins;
+    const dailyActive = route.name === 'mode' || route.name === 'calendar';
+
+    // abas do topo
+    const tabs = [
+      ['#classic', 'DIÁRIO', dailyActive],
+      ['#infinito', 'INFINITO', route.name === 'infinite'],
+      ['#x1', 'X1', route.name === 'x1'],
+    ];
+    const live = views.x1 && views.x1.inRoom && views.x1.inRoom();
+    $('#top-tabs').innerHTML = tabs.map(([href, label, on]) =>
+      `<a href="${href}" class="top-tab ${on ? 'on' : ''}" ${on ? 'aria-current="page"' : ''}>${label}${label === 'X1' && live ? '<i class="live"></i>' : ''}</a>`).join('');
+
+    // carteira
+    $('#wallet').innerHTML = `
+      <div title="Sequência diária">${ICON.fire.replace('<svg', '<svg style="color:#ffb347"')}<span>${st.current}</span><small>${st.current === 1 ? 'dia seguido' : 'dias seguidos'}</small></div>
+      <div title="Vitórias somando todos os modos">${ICON.star}<span>${wins}</span><small>vitórias</small></div>`;
+
+    // banner e modos do dia
+    const done = MODES.filter((m) => loadGame(m.id, currentKey).status !== 'playing').length;
+    $('#side-banner').innerHTML = `<img src="${esc(localSplash(stageBackground()))}" alt=""><div><small>${done}/5 CONCLUÍDOS</small><b>DESAFIO #${dayNumber(currentKey)}</b></div>`;
+    const activeMode = route.name === 'mode' && route.key === currentKey ? route.mode : null;
+    $('#side-modes').innerHTML = MODES.map((m) => {
+      const g = loadGame(m.id, currentKey);
+      const [cls, txt] = g.status === 'won' ? ['st-won', 'Concluído']
+        : g.status === 'lost' ? ['st-lost', 'Derrota']
+        : g.guesses.length ? ['st-play', `Jogando · ${plural(g.guesses.length, 'tentativa')}`] : ['st-new', 'Novo'];
+      const on = m.id === activeMode;
+      return `<a href="#${m.id}" class="side-mode ${on ? 'on' : ''}" ${on ? 'aria-current="page"' : ''}>
+        <span class="thumb">${ICON[m.id]}</span>
+        <span class="txt"><b>${m.name.toUpperCase()}</b><small class="${cls}">${txt}</small></span></a>`;
+    }).join('');
+
+    // no celular, a faixa de modos rola até o modo aberto
+    const activeEl = $('#side-modes .side-mode.on');
+    if (activeEl && matchMedia('(max-width: 860px)').matches) {
+      const strip = $('#side-modes');
+      strip.scrollLeft = activeEl.offsetLeft - (strip.clientWidth - activeEl.clientWidth) / 2;
+    }
+
+    // fundo do palco (troca suave)
+    const bg = $('#stage-bg-img');
+    const src = localSplash(stageBackground());
+    if (bg.getAttribute('src') !== src) {
+      bg.classList.remove('on');
+      bg.onload = () => bg.classList.add('on');
+      bg.setAttribute('src', src);
+      if (bg.complete && bg.naturalWidth) bg.classList.add('on');
+    }
+
+    renderSocial(st, wins);
+  }
+
+  /* coluna da direita: perfil, sequência, progresso do dia e X1 */
+  function renderSocial(st, wins) {
+    const open = read('pref:groups', { streak: true, today: true, x1: true });
     const names = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
     const week = st.week.map((d) => {
       const wd = names[new Date(d.key + 'T12:00:00Z').getUTCDay()];
       return `<span class="day ${d.won ? 'won' : ''} ${d.key === currentKey ? 'now' : ''}"><i>${d.won ? ICON.fire : ''}</i><small>${wd}</small></span>`;
     }).join('');
-    const msg = st.wonToday ? 'Desafio de hoje concluído. Volte às 21h!'
-      : st.current ? 'Vença um desafio hoje para manter a sequência.'
-      : 'Vença um desafio hoje para começar uma sequência.';
-    return `
-      <section class="frame streak-card">
-        <div class="streak-main">
-          <span class="flame ${st.current ? 'on' : ''}">${ICON.fire}</span>
-          <div><b>${st.current}</b><span>${st.current === 1 ? 'dia seguido' : 'dias seguidos'}</span></div>
-          <div class="best"><small>Recorde</small><b>${st.best}</b></div>
-        </div>
-        <div class="week">${week}</div>
-        <p>${msg}</p>
-      </section>`;
-  }
-
-  function homeHTML() {
-    const games = MODES.map((m) => ({ m, g: loadGame(m.id, currentKey), s: loadStats(m.id) }));
-    const done = games.filter((x) => x.g.status !== 'playing').length;
-    const inf = loadInf();
-    const cards = games.map(({ m, g, s }, i) => {
-      const st = g.status === 'won' ? '<span class="won">Concluído</span>'
-        : g.status === 'lost' ? '<span class="lost">Derrota</span>'
-        : g.guesses.length ? plural(g.guesses.length, 'tentativa') : 'Novo';
-      return `<a href="#${m.id}" class="frame mode-card" style="animation-delay:${i * 0.06}s">
-        <span class="ico ${g.status === 'won' ? 'won' : ''}">${ICON[m.id]}</span>
-        <span class="txt"><b>${m.name}</b><small>${m.desc}</small></span>
-        <span class="st">${st}${s.currentStreak > 0 ? `<span class="streak">Sequência ${s.currentStreak}</span>` : ''}</span>
-      </a>`;
+    const today = MODES.map((m) => {
+      const g = loadGame(m.id, currentKey);
+      const [cls, txt] = g.status === 'won' ? ['st-won', plural(g.guesses.length, 'tentativa')] : g.status === 'lost' ? ['st-lost', 'desistiu'] : ['st-new', g.guesses.length ? 'em andamento' : 'novo'];
+      return `<a href="#${m.id}" class="mini-row">${ICON[m.id]}<span>${m.name}</span><small class="${cls}">${txt}</small></a>`;
     }).join('');
-    return `
-      <section class="hero" style="animation:rise .35s ease-out both">
-        <p class="muted" style="margin:0">Desafio #${dayNumber(currentKey)}</p>
-        <h1>Adivinhe o campeão</h1>
-        <p>Cinco desafios novos todo dia, iguais para todos os jogadores.</p>
-      </section>
-      ${streakCard()}
-      <div class="progress" aria-label="Progresso do dia">
-        <div class="progress-bar"><span style="width:${(done / MODES.length) * 100}%"></span></div>
-        <span>${done}/${MODES.length}</span>
-      </div>
-      <nav class="mode-list">${cards}</nav>
-      <div class="extra-modes">
-        <a href="#infinito" class="frame extra-card">
-          <span class="ico">${ICON.infinite}</span>
-          <span class="txt"><b>Modo infinito</b><small>Rodadas aleatórias sem limite</small></span>
-          <span class="st">${inf.streak ? `<span class="streak-num">${ICON.fire}${inf.streak}</span>` : ''}</span>
-        </a>
-        <a href="#calendario" class="frame extra-card">
-          <span class="ico">${ICON.calendar}</span>
-          <span class="txt"><b>Calendário</b><small>Jogue desafios de outros dias</small></span>
-        </a>
-      </div>
-      <div class="countdown">
-        <div class="label">Novos campeões em</div>
-        <div class="time" data-countdown>${formatCountdown(msUntilReset())}</div>
-        <div class="small" style="color:var(--gold-500)">${RESET_LABEL}</div>
+    const x1Body = views.x1 && views.x1.socialHTML ? views.x1.socialHTML() : '<a href="#x1" class="btn btn-hex" style="width:100%">CRIAR OU ENTRAR</a>';
+    const group = (id, label, body) => `
+      <div>
+        <button class="group-btn" type="button" data-group="${id}" aria-expanded="${!!open[id]}"><span class="arrow">▸</span>${label}</button>
+        ${open[id] ? `<div class="group-body">${body}</div>` : ''}
       </div>`;
+    const avatarId = MODES.map((m) => pickDaily(m.pool, m.id, prevKey(currentKey)).id)[0];
+    $('#social').innerHTML = `
+      <div class="profile">
+        <span class="avatar">${champIcon(avatarId, 48)}<span class="lvl">${wins}</span></span>
+        <span class="who"><b>Invocador</b><small>● Jogando Runedle</small></span>
+      </div>
+      <div class="social-head"><span>SOCIAL</span></div>
+      <div class="social-groups">
+        ${group('streak', `SEQUÊNCIA (${st.current})`, `
+          <div class="streak-big"><span class="flame ${st.current ? 'on' : ''}">${ICON.fire}</span><div><b>${st.current}</b><small>${st.current === 1 ? 'dia seguido' : 'dias seguidos'} · recorde ${st.best}</small></div></div>
+          <div class="week">${week}</div>
+          <small class="muted" style="font-size:12px">${st.wonToday ? 'Desafio de hoje concluído. Volte às 21h!' : 'Vença um desafio hoje para manter a sequência.'}</small>`)}
+        ${group('today', `DESAFIO DE HOJE (${MODES.filter((m) => loadGame(m.id, currentKey).status === 'won').length}/5)`, today)}
+        ${group('x1', 'X1 AO VIVO', x1Body)}
+      </div>
+      <div class="social-foot"><span>Novo desafio em</span><b data-countdown style="margin-left:auto;font-variant-numeric:tabular-nums;color:var(--gold-100)">${formatCountdown(msUntilReset())}</b></div>`;
+    $('#social').querySelectorAll('[data-group]').forEach((b) => b.addEventListener('click', () => {
+      const cur = read('pref:groups', { streak: true, today: true, x1: true });
+      cur[b.dataset.group] = !cur[b.dataset.group];
+      write('pref:groups', cur);
+      renderSocial(dailyStreak(), wins);
+    }));
   }
 
   /* barra acima da pista: dia do calendário ou painel do modo infinito */
@@ -780,8 +834,12 @@
     const playing = g.status === 'playing';
     const heading = s.kind === 'daily' && s.mode.id === 'classic' ? 'Adivinhe o campeão de hoje' : s.mode.heading;
     const giveUpLabel = s.kind === 'infinite' ? `${ICON.skip} Pular (zera a sequência)` : `${ICON.flag} Desistir`;
+    const kicker = s.kind === 'infinite' ? '' : `
+      <div class="kicker"><b>MODO ${s.mode.name.toUpperCase()}${s.kind === 'archive' ? ` · ${fmtDate(s.key)}` : ` · DESAFIO #${dayNumber(s.key)}`}</b>
+        ${s.kind === 'daily' ? `<span class="pill">${ICON.clock}<span data-countdown>${formatCountdown(msUntilReset())}</span></span>` : ''}</div>`;
     return `
       ${sessionTopHTML(s)}
+      ${kicker}
       <section class="frame clue">
         <h1 class="title">${heading}</h1>
         ${s.mode.clue(g, s.target)}
@@ -908,6 +966,12 @@
         write(name === 'splashGray' ? 'pref:splash-gray' : `pref:ability-${name}`, el.checked);
         render();
       });
+    });
+
+    const abil = app.querySelector('[data-ability]');
+    if (abil) abil.addEventListener('error', () => {
+      const id = abil.dataset.champ;
+      if (CD_ICONS[id] && CD_ICONS[id].status === 'online') { CD_ICONS[id] = { status: 'offline' }; render(); }
     });
 
     const splash = app.querySelector('[data-splash]');
@@ -1192,21 +1256,19 @@
   /* =========================================================
    * Inicialização
    * ======================================================= */
-  $('#btn-home').innerHTML = ICON.home;
-  $('#btn-history').innerHTML = ICON.history;
   $('#btn-stats').innerHTML = ICON.stats;
-  $('#btn-help').innerHTML = ICON.help;
+  $('#btn-history').innerHTML = ICON.history;
+  $('#btn-cal').innerHTML = ICON.calendar;
   $('#btn-history').addEventListener('click', openHistory);
   $('#btn-stats').addEventListener('click', () => {
-    const s = currentSession();
+    const s = route.name === 'mode' || route.name === 'infinite' ? currentSession() : null;
     openStats(s ? (s.kind === 'infinite' ? 'infinite' : s.mode.id) : 'classic');
   });
   $('#btn-help').addEventListener('click', openHelp);
-  $('#streak-badge').addEventListener('click', () => { location.hash = ''; });
 
   window.addEventListener('hashchange', () => {
     route = parseRoute();
-    view = { openHint: null, animateIdx: -1 };
+    view = { openHint: null, animateIdx: -1, enter: true };
     if (route.name === 'mode' && route.key !== currentKey && location.hash === `#dia-${currentKey}-${route.mode}`) location.hash = route.mode;
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1220,11 +1282,21 @@
     if (k !== currentKey) {
       currentKey = k;
       route = parseRoute();
-      view = { openHint: null, animateIdx: -1 };
+      view = { openHint: null, animateIdx: -1, enter: true };
       render();
     }
   }, 1000);
 
+  /* API usada pelo X1 (js/x1.js) */
+  window.RUNEDLE = {
+    CHAMPIONS, BY_ID, MODES, MODE_BY_ID, QUOTES, KEYS, ICON, COLUMNS,
+    esc, plural, read, write, champIcon, spinner, confetti, openModal, closeModal, normalize,
+    registerView(name, v) { views[name] = v; if (route.name === name) render(); else renderShell(); },
+    rerender: () => render(),
+    get route() { return route; },
+  };
+
   $('#patch').textContent = typeof ASSET_PATCH !== 'undefined' ? ASSET_PATCH : '';
+  view.enter = true;
   render();
 })();
