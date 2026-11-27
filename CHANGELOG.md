@@ -29,6 +29,12 @@ e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - X1: limite de uso por endereço (criação de salas, entradas e palpites).
 - X1: no modo Emoji, o servidor só envia os emojis já revelados.
 
+### Corrigido
+- X1: a tela piscava na contagem e a cada palpite. Agora só o número da contagem muda, cada animação roda uma vez
+  e a tela só é redesenhada quando algo mudou de verdade.
+- X1: o texto digitado na busca não some mais quando o adversário faz um palpite.
+- Banner e coluna lateral não recarregam mais a imagem a cada atualização.
+
 ## [1.1.0] - 2026-11-27
 
 ### Adicionado

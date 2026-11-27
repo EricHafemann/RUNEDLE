@@ -436,7 +436,8 @@
       heading: 'Qual campeão estes emojis representam?',
       clue: (g, t) => {
         const shown = g.status !== 'playing' ? t.emojis.length : Math.min(t.emojis.length, g.guesses.length + 1);
-        const boxes = t.emojis.map((e, i) => `<span class="${i < shown ? 'on pop' : ''}">${i < shown ? esc(e) : '?'}</span>`).join('');
+        const isNew = (i) => view.animateIdx >= 0 && i === shown - 1;
+        const boxes = t.emojis.map((e, i) => `<span class="${i < shown ? `on${isNew(i) ? ' pop' : ''}` : ''}">${i < shown ? esc(e) : '?'}</span>`).join('');
         return `<div class="emojis">${boxes}</div>${
           g.status === 'playing' && shown < t.emojis.length ? '<p class="muted small" style="margin:12px 0 0">Cada erro revela mais um emoji.</p>' : ''}`;
       },
@@ -639,6 +640,15 @@
     return pool[hash(`bg:${key}`) % pool.length].id;
   }
 
+  /* só troca o conteúdo quando ele mudou (evita recarregar imagens e piscar) */
+  function setHTML(el, html) {
+    if (el._html === html) return false;
+    el.innerHTML = html;
+    el._html = html;
+    return true;
+  }
+  const fillCountdowns = (root) => root.querySelectorAll('[data-countdown]').forEach((el) => { el.textContent = formatCountdown(msUntilReset()); });
+
   function renderShell() {
     const st = dailyStreak();
     const wins = MODES.reduce((n, m) => n + loadStats(m.id).wins, 0) + loadInf().wins;
@@ -651,19 +661,19 @@
       ['#x1', 'X1', route.name === 'x1'],
     ];
     const live = views.x1 && views.x1.inRoom && views.x1.inRoom();
-    $('#top-tabs').innerHTML = tabs.map(([href, label, on]) =>
-      `<a href="${href}" class="top-tab ${on ? 'on' : ''}" ${on ? 'aria-current="page"' : ''}>${label}${label === 'X1' && live ? '<i class="live"></i>' : ''}</a>`).join('');
+    setHTML($('#top-tabs'), tabs.map(([href, label, on]) =>
+      `<a href="${href}" class="top-tab ${on ? 'on' : ''}" ${on ? 'aria-current="page"' : ''}>${label}${label === 'X1' && live ? '<i class="live"></i>' : ''}</a>`).join(''));
 
     // carteira
-    $('#wallet').innerHTML = `
+    setHTML($('#wallet'), `
       <div title="Sequência diária">${ICON.fire.replace('<svg', '<svg style="color:#ffb347"')}<span>${st.current}</span><small>${st.current === 1 ? 'dia seguido' : 'dias seguidos'}</small></div>
-      <div title="Vitórias somando todos os modos">${ICON.star}<span>${wins}</span><small>vitórias</small></div>`;
+      <div title="Vitórias somando todos os modos">${ICON.star}<span>${wins}</span><small>vitórias</small></div>`);
 
     // banner e modos do dia
     const done = MODES.filter((m) => loadGame(m.id, currentKey).status !== 'playing').length;
-    $('#side-banner').innerHTML = `<img src="${esc(localSplash(stageBackground()))}" alt=""><div><small>${done}/5 CONCLUÍDOS</small><b>DESAFIO #${dayNumber(currentKey)}</b></div>`;
+    setHTML($('#side-banner'), `<img src="${esc(localSplash(stageBackground()))}" alt=""><div><small>${done}/5 CONCLUÍDOS</small><b>DESAFIO #${dayNumber(currentKey)}</b></div>`);
     const activeMode = route.name === 'mode' && route.key === currentKey ? route.mode : null;
-    $('#side-modes').innerHTML = MODES.map((m) => {
+    setHTML($('#side-modes'), MODES.map((m) => {
       const g = loadGame(m.id, currentKey);
       const [cls, txt] = g.status === 'won' ? ['st-won', 'Concluído']
         : g.status === 'lost' ? ['st-lost', 'Derrota']
@@ -672,7 +682,7 @@
       return `<a href="#${m.id}" class="side-mode ${on ? 'on' : ''}" ${on ? 'aria-current="page"' : ''}>
         <span class="thumb">${ICON[m.id]}</span>
         <span class="txt"><b>${m.name.toUpperCase()}</b><small class="${cls}">${txt}</small></span></a>`;
-    }).join('');
+    }).join(''));
 
     // no celular, a faixa de modos rola até o modo aberto
     const activeEl = $('#side-modes .side-mode.on');
@@ -714,7 +724,7 @@
         ${open[id] ? `<div class="group-body">${body}</div>` : ''}
       </div>`;
     const avatarId = MODES.map((m) => pickDaily(m.pool, m.id, prevKey(currentKey)).id)[0];
-    $('#social').innerHTML = `
+    const changed = setHTML($('#social'), `
       <div class="profile">
         <span class="avatar">${champIcon(avatarId, 48)}<span class="lvl">${wins}</span></span>
         <span class="who"><b>Invocador</b><small>● Jogando Runedle</small></span>
@@ -728,7 +738,9 @@
         ${group('today', `DESAFIO DE HOJE (${MODES.filter((m) => loadGame(m.id, currentKey).status === 'won').length}/5)`, today)}
         ${group('x1', 'X1 AO VIVO', x1Body)}
       </div>
-      <div class="social-foot"><span>Novo desafio em</span><b data-countdown style="margin-left:auto;font-variant-numeric:tabular-nums;color:var(--gold-100)">${formatCountdown(msUntilReset())}</b></div>`;
+      <div class="social-foot"><span>Novo desafio em</span><b data-countdown style="margin-left:auto;font-variant-numeric:tabular-nums;color:var(--gold-100)"></b></div>`);
+    if (!changed) return;
+    fillCountdowns($('#social'));
     $('#social').querySelectorAll('[data-group]').forEach((b) => b.addEventListener('click', () => {
       const cur = read('pref:groups', { streak: true, today: true, x1: true });
       cur[b.dataset.group] = !cur[b.dataset.group];
@@ -813,7 +825,7 @@
       : s.kind === 'archive' ? '<a href="#calendario" class="btn-link">Voltar ao calendário</a>' : '';
     const giveUpText = s.kind === 'infinite' ? `Você pulou após ${plural(g.guesses.length, 'tentativa')}.` : `Você desistiu após ${plural(g.guesses.length, 'tentativa')}.`;
     return `
-      <section class="frame result ${won ? 'won' : 'lost'}" aria-live="polite">
+      <section class="frame result ${won ? 'won' : 'lost'}" aria-live="polite" style="${resultSeen.has(`${s.key}:${s.mode.id}`) ? 'animation:none' : ''}">
         <h2>${won ? 'Vitória!' : s.kind === 'infinite' ? 'Rodada pulada' : 'Derrota'}</h2>
         <div class="who">
           ${champIcon(t.id, 80)}
@@ -829,8 +841,10 @@
       </section>`;
   }
 
+  const resultSeen = new Set(); // o painel de resultado só anima na primeira vez que aparece
   function sessionHTML(s) {
     const g = s.game();
+    if (g.status !== 'playing') setTimeout(() => resultSeen.add(`${s.key}:${s.mode.id}`), 0);
     const playing = g.status === 'playing';
     const heading = s.kind === 'daily' && s.mode.id === 'classic' ? 'Adivinhe o campeão de hoje' : s.mode.heading;
     const giveUpLabel = s.kind === 'infinite' ? `${ICON.skip} Pular (zera a sequência)` : `${ICON.flag} Desistir`;

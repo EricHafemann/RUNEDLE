@@ -26,6 +26,12 @@
   let ticker = null;
   let lastKey = '';
   let poll = null;
+  let lastState = '';      // evita redesenhar quando nada mudou
+  let freshId = null;      // só o palpite recém-feito anima, uma vez
+  let shownEmojis = 0;     // só o emoji recém-revelado anima
+  let resultSeen = '';     // o painel de resultado anima só na primeira vez
+  let draft = '';          // texto da busca sobrevive aos avisos do adversário
+  let searchFocused = false;
 
   const meName = () => read('x1:name', '');
   const shareLink = (code) => `${location.origin}${location.pathname}#x1-${code}`;
@@ -121,7 +127,8 @@
         R.confetti();
       }
       tick();
-      R.rerender();
+      const key = JSON.stringify([room, players, clue && clue.round, clue && clue.clue && (clue.clue.emojis || []).length, answer, error]);
+      if (key !== lastState) { lastState = key; R.rerender(); }
     } finally {
       refreshing = false;
     }
@@ -132,9 +139,19 @@
     clearInterval(ticker);
     if (room && room.status === 'playing' && room.starts_at && Date.parse(room.starts_at) > Date.now()) {
       ticker = setInterval(() => {
-        if (Date.parse(room.starts_at) <= Date.now()) clearInterval(ticker);
-        if (R.route.name === 'x1') R.rerender();
-      }, 250);
+        const left = Date.parse(room.starts_at) - Date.now();
+        if (left <= 0) {
+          clearInterval(ticker);
+          if (R.route.name === 'x1') R.rerender(); // abre a rodada
+          return;
+        }
+        const el = document.querySelector('[data-count]');
+        const n = String(Math.ceil(left / 1000));
+        if (el && el.textContent !== n) {
+          el.textContent = n;
+          el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; // repete o "pop" a cada número
+        }
+      }, 100);
     }
   }
 
@@ -195,7 +212,9 @@
         // o servidor só manda os emojis já revelados
         const em = c.emojis || [];
         const total = Math.max(c.total || 5, em.length);
-        return `<div class="emojis">${Array.from({ length: total }, (_, i) => `<span class="${i < em.length ? 'on pop' : ''}">${i < em.length ? esc(em[i]) : '?'}</span>`).join('')}</div>`;
+        const prev = shownEmojis;
+        shownEmojis = em.length;
+        return `<div class="emojis">${Array.from({ length: total }, (_, i) => `<span class="${i < em.length ? `on${i >= prev ? ' pop' : ''}` : ''}">${i < em.length ? esc(em[i]) : '?'}</span>`).join('')}</div>`;
       }
       case 'ability': return c.img ? `<div class="ability-frame"><img src="${c.img}" alt="Ícone da habilidade" style="${done ? '' : 'filter:grayscale(1)'}"></div>` : spinner('Carregando habilidade…');
       case 'splash': {
@@ -214,7 +233,7 @@
       const head = `<div class="crow chead"><div>Campeão</div>${COLUMNS.map(([, l]) => `<div>${l}</div>`).join('')}</div>`;
       const rows = list.map((g, i) => {
         const c = BY_ID[g.id];
-        const fresh = i === 0 && g.fresh;
+        const fresh = i === 0 && g.id === freshId;
         const cells = COLUMNS.map(([k], ci) => {
           const m = g.cells ? g.cells[k] : 'wrong';
           const text = Array.isArray(c[k]) ? c[k].join(', ') : String(c[k]);
@@ -225,7 +244,7 @@
       }).join('');
       return `<div class="table-wrap"><div class="ctable">${head}${rows}</div></div>`;
     }
-    return `<ul class="guess-list">${list.map((g, i) => `<li class="${g.correct ? 'right' : 'wrong'} ${i === 0 && g.fresh ? 'flip' : ''}">${champIcon(g.id, 40)}<b>${esc(BY_ID[g.id].name)}</b><small>#${list.length - i}</small></li>`).join('')}</ul>`;
+    return `<ul class="guess-list">${list.map((g, i) => `<li class="${g.correct ? 'right' : 'wrong'} ${i === 0 && g.id === freshId ? 'flip' : ''}">${champIcon(g.id, 40)}<b>${esc(BY_ID[g.id].name)}</b><small>#${list.length - i}</small></li>`).join('')}</ul>`;
   }
 
   function roomHTML() {
@@ -282,7 +301,7 @@
     const host = room.host_id === sess.playerId;
     const a = answer && BY_ID[answer];
     return `
-      <section class="frame result ${iWon ? 'won' : 'lost'}">
+      <section class="frame result ${iWon ? 'won' : 'lost'}" style="${resultSeen === `${room.code}:${room.round}` ? 'animation:none' : ''}">
         <h2>${iWon ? 'Vitória!' : winner ? `${esc(winner.name)} venceu` : 'Fim da rodada'}</h2>
         ${a ? `<div class="who">${champIcon(answer, 72)}<div><span class="muted">O campeão era</span><strong>${esc(a.name)}</strong></div></div>` : ''}
         <div class="actions">
@@ -292,6 +311,13 @@
   }
 
   function html(route) {
+    const out = htmlInner(route);
+    if (room && room.status === 'finished') resultSeen = `${room.code}:${room.round}`;
+    if (room && room.status !== 'finished' && clue && clue.round !== room.round) shownEmojis = 0;
+    return out;
+  }
+
+  function htmlInner(route) {
     if (!configured) {
       return `<div class="kicker"><b>X1 AO VIVO</b></div>
         <section class="frame notice">O X1 ainda não foi configurado neste site. Ele precisa de um projeto no Supabase configurado.</section>`;
@@ -361,6 +387,7 @@
     }));
 
     bindSearch();
+    freshId = null; // a animação do palpite novo já foi desenhada
   }
 
   function bindSearch() {
@@ -389,26 +416,39 @@
       if (!pick || busy) return;
       act(async () => {
         const r = await call('guess', { code: sess.code, token: sess.token, championId: pick });
-        mine.list.forEach((g) => { g.fresh = false; });
-        mine.list.unshift({ id: pick, correct: r.correct, cells: r.cells, fresh: true });
+        mine.list.unshift({ id: pick, correct: r.correct, cells: r.cells });
+        freshId = pick;
+        draft = '';
         write('x1:guesses', mine);
         if (r.clue && clue) clue = { ...clue, clue: r.clue };
         if (r.correct) answer = pick;
       });
     };
-    input.addEventListener('input', () => { items = compute(); active = 0; draw(); });
+    input.value = draft;
+    if (searchFocused) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(draft.length, draft.length);
+      if (draft) { items = compute(); draw(); }
+    }
+    input.addEventListener('focus', () => { searchFocused = true; });
+    input.addEventListener('input', () => { draft = input.value; items = compute(); active = 0; draw(); });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, items.length - 1); draw(); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); draw(); }
       else if (e.key === 'Escape') list.hidden = true;
     });
-    input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; }, 150));
+    // ao redesenhar, o campo antigo some e dispara "blur": nesse caso o foco continua no campo novo
+    input.addEventListener('blur', () => setTimeout(() => {
+      if (!input.isConnected) return;
+      searchFocused = false;
+      list.hidden = true;
+    }, 150));
     input.form.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
     list.addEventListener('mousedown', (e) => {
       const li = e.target.closest('li[data-id]');
       if (li) { e.preventDefault(); submit(li.dataset.id); }
     });
-    if (matchMedia('(pointer: fine)').matches) input.focus({ preventScroll: true });
+    if (!searchFocused && matchMedia('(pointer: fine)').matches) input.focus({ preventScroll: true });
   }
 
   /* ---------- coluna social ---------- */
