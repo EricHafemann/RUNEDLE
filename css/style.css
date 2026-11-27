@@ -365,10 +365,6 @@ a.cal-cell:hover { border-color: var(--hex-200); background: rgba(10,50,60,.6); 
 .meter { height: 6px; background: #091428; overflow: hidden; }
 .meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--hex-300), var(--hex-200)); transition: width .6s var(--ease); }
 .player.done .meter i { background: var(--gold-300); }
-.pips { display: flex; align-items: center; gap: 4px; min-height: 6px; flex-wrap: wrap; }
-.pips i { width: 12px; height: 6px; background: var(--hex-200); animation: pop .35s cubic-bezier(.2,.9,.3,1.2) both; }
-.pips i:not(:last-child) { animation: none; opacity: .75; }
-.pips small { font-size: 11px; color: var(--grey-1); }
 .big-count { font: 900 96px/1 var(--display); color: var(--gold-200); animation: pop .6s cubic-bezier(.2,.9,.3,1.2) both; }
 .notice { width: 100%; padding: 14px 16px; font-size: 14px; color: var(--gold-200); text-align: center; }
 
