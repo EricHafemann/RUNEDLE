@@ -192,13 +192,17 @@
     return `<div class="players">${players.map((p) => {
       const mineP = p.id === sess.playerId;
       const host = p.id === room.host_id;
-      const pct = room.status === 'lobby' ? 0 : p.finished ? 100 : isClassic ? Math.round((p.progress / 7) * 100) : Math.min(90, p.attempts * 12);
+      const pct = room.status === 'lobby' ? 0 : p.finished ? 100 : Math.min(100, p.progress);
       const status = room.status === 'lobby' ? (host ? 'Anfitrião' : 'Pronto')
         : p.won ? `Acertou em ${plural(p.attempts, 'tentativa')}`
-        : `${plural(p.attempts, 'tentativa')}${isClassic && p.attempts ? ` · ${p.progress}/7 verdes` : ''}`;
+        : `${plural(p.attempts, 'tentativa')}${isClassic && p.attempts ? ` · ${pct}% perto` : ''}`;
+      // Classic: barra de "quão perto"; nos outros modos não existe "perto", então um tracinho por tentativa
+      const meter = isClassic || room.status === 'lobby' || p.finished
+        ? `<div class="meter" title="Quão perto chegou do campeão"><i style="width:${pct}%"></i></div>`
+        : `<div class="pips" aria-label="${plural(p.attempts, 'tentativa')}">${Array.from({ length: Math.min(p.attempts, 14) }, () => '<i></i>').join('')}${p.attempts > 14 ? `<small>+${p.attempts - 14}</small>` : ''}</div>`;
       return `<div class="player ${mineP ? 'me' : ''} ${p.finished ? 'done' : ''}">
         <div class="top"><b>${esc(p.name)}${mineP ? ' <small>(você)</small>' : ''}</b><small>${status}</small></div>
-        <div class="meter"><i style="width:${pct}%"></i></div></div>`;
+        ${meter}</div>`;
     }).join('')}${players.length < 2 ? '<div class="player"><div class="top"><b class="muted">Esperando adversário…</b></div><div class="meter"><i style="width:0"></i></div></div>' : ''}</div>`;
   }
 

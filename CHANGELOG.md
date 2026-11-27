@@ -33,6 +33,8 @@ e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - X1: a tela piscava na contagem e a cada palpite. Agora só o número da contagem muda, cada animação roda uma vez
   e a tela só é redesenhada quando algo mudou de verdade.
 - X1: o texto digitado na busca não some mais quando o adversário faz um palpite.
+- X1: a barra do adversário no Classic mostra o quão perto ele já chegou (verde = 1, amarelo = 0,5,
+  melhor palpite até agora) e só anda para frente. Nos outros modos, um tracinho por tentativa.
 - Banner e coluna lateral não recarregam mais a imagem a cada atualização.
 
 ## [1.1.0] - 2026-11-27
