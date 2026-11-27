@@ -5,6 +5,24 @@ Todas as mudanças relevantes deste projeto são documentadas aqui.
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/)
 e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.2.0] - 2026-11-27
+
+### Adicionado
+- **X1 ao vivo**: salas com código e link de convite, os dois jogadores recebem o mesmo campeão
+  ao mesmo tempo, progresso do adversário em tempo real, placar e revanche. Os palpites são
+  conferidos numa função do servidor (Supabase Edge Function), então a resposta nunca chega ao navegador.
+- **Nova interface no estilo do cliente do LoL**: botão JOGAR, abas Diário / Infinito / X1,
+  carteira com sequência e vitórias, menu lateral com os modos do dia, coluna com perfil,
+  sequência da semana, desafio de hoje e X1.
+- Fundo do jogo com arte desfocada que nunca é a resposta de nenhum modo do dia.
+- Transições: entrada em cascata ao trocar de tela, troca suave do fundo e grupos recolhíveis.
+
+### Alterado
+- O site abre direto no **Classic**, sem tela de menu.
+- **Ícones de habilidade atualizados**: o modo Ability busca o ícone atual do cliente no
+  CommunityDragon, com o ícone salvo no projeto como reserva.
+- Aviso legal no rodapé com o texto da política de projetos de fãs da Riot.
+
 ## [1.1.0] - 2026-11-27
 
 ### Adicionado
@@ -41,5 +59,6 @@ e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - Imagens locais de 172 campeões (patch 16.23.1): ícones, habilidades e splash arts. O jogo funciona offline.
 - Layout responsivo para celular e computador, com tema escuro dourado e azul e animações.
 
+[1.2.0]: https://github.com/EricHafemann/RUNEDLE/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/EricHafemann/RUNEDLE/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/EricHafemann/RUNEDLE/releases/tag/v1.0.0

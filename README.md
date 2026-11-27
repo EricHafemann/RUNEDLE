@@ -5,13 +5,13 @@
 **Descubra o campeão de League of Legends do dia.**
 Um jogo diário de adivinhação inspirado no LoLdle, feito com HTML, CSS e JavaScript puro.
 
-![Versão](https://img.shields.io/badge/vers%C3%A3o-1.1.0-c8aa6e)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-1.2.0-c8aa6e)
 ![HTML5](https://img.shields.io/badge/HTML5-E34F26?logo=html5&logoColor=white)
 ![CSS3](https://img.shields.io/badge/CSS3-1572B6?logo=css3&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-MIT-0ac8b9)
 
-<img src="docs/screenshots/classic.jpg" alt="Modo Classic" width="720">
+<img src="docs/screenshots/classic.jpg" alt="Modo Classic" width="760">
 
 </div>
 
@@ -35,6 +35,7 @@ O projeto não tem dependências nem etapa de build: basta abrir o `index.html`.
 
 ## Funcionalidades
 
+- ⚔️ **X1 ao vivo**: salas com código para dois jogadores, o mesmo campeão ao mesmo tempo, progresso do adversário em tempo real e palpites conferidos no servidor (Supabase).
 - ♾️ **Modo infinito**: rodadas aleatórias sem limite, em um modo escolhido ou sorteado, com sequência e recorde próprios.
 - 📅 **Calendário**: jogue o desafio de qualquer dia passado (não conta para a sequência diária).
 - 🔥 **Sequência diária**: dias seguidos em que você venceu pelo menos um desafio, com recorde e os últimos 7 dias.
@@ -43,13 +44,19 @@ O projeto não tem dependências nem etapa de build: basta abrir o `index.html`.
 - 🔎 **Autocompletar** com ícones, navegação pelo teclado e bloqueio de palpites repetidos.
 - 💡 **Dicas** liberadas conforme você erra e opção de **desistir**.
 - 📤 **Compartilhar** o resultado em emojis, como no Wordle.
+- 🖥️ **Interface no estilo do cliente do LoL**: o jogo abre direto no Classic, com menu de modos, perfil, sequência e transições suaves.
 - 📱 **Responsivo**, com animações que respeitam `prefers-reduced-motion`.
 - ✈️ **Funciona offline**: ícones, habilidades e splash padrão ficam no repositório. Com internet, o modo Splash busca as skins no Data Dragon.
 
 <div align="center">
-  <img src="docs/screenshots/home-mobile.png" alt="Tela inicial no celular" width="260">
+  <img src="docs/screenshots/emoji-mobile.png" alt="Modo Emoji no celular" width="260">
   &nbsp;&nbsp;
   <img src="docs/screenshots/ability-mobile.png" alt="Modo Ability no celular" width="260">
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/x1.jpg" alt="X1 ao vivo" width="760">
+  <p><sub>X1 ao vivo: progresso do adversário em tempo real.</sub></p>
 </div>
 
 ## Como rodar
@@ -81,7 +88,11 @@ RUNEDLE/
 ├── js/
 │   ├── data.js         # Atributos dos campeões, emojis, falas e títulos
 │   ├── icons.js        # Ícones dos campeões (embutidos em base64)
-│   └── app.js          # Lógica do jogo
+│   ├── config.js       # URL e chave pública do Supabase (X1)
+│   ├── app.js          # Lógica do jogo
+│   └── x1.js           # X1 ao vivo (cliente)
+├── supabase/           # Banco e função do servidor do X1 (veja supabase/README.md)
+├── tools/              # Scripts de manutenção
 ├── spells/             # Habilidades de cada campeão (carregadas sob demanda)
 ├── splash/             # Splash arts (carregadas sob demanda)
 └── docs/screenshots/   # Imagens deste README
@@ -98,8 +109,13 @@ RUNEDLE/
 | Modos | Configuração de cada modo: sorteio, pista, dicas, bônus e texto de compartilhamento. |
 | Renderização | Telas, busca com autocompletar, modais e animação de vitória. |
 
+## X1 ao vivo
+
+O X1 precisa de um projeto no Supabase. O passo a passo está em [`supabase/README.md`](supabase/README.md). Sem configuração, o resto do jogo funciona normalmente e a aba X1 avisa que o modo não está disponível.
+
 ## Dados
 
+- **Ícones de habilidade** vêm do [CommunityDragon](https://communitydragon.org) (arquivos atuais do cliente), com os ícones do Data Dragon salvos no projeto como reserva.
 - **Imagens, nomes e títulos** vêm do [Data Dragon](https://developer.riotgames.com/docs/lol#data-dragon) da Riot Games, patch 16.23.1. As skins do modo Splash são carregadas do Data Dragon quando há internet.
 - **Gênero, posições, espécie, recurso, alcance, região e ano** não existem no Data Dragon e foram catalogados manualmente em `js/data.js`.
   Correções são bem-vindas: cada campeão é uma linha.
