@@ -12,3 +12,7 @@ desktop.ini
 node_modules/
 dist/
 *.log
+
+# Arquivos do servidor do X1 (Supabase) ficam fora do repositório
+supabase/
+tools/

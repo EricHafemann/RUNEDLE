@@ -23,6 +23,12 @@ e o projeto usa [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   CommunityDragon, com o ícone salvo no projeto como reserva.
 - Aviso legal no rodapé com o texto da política de projetos de fãs da Riot.
 
+### Segurança
+- X1: o navegador não lê nenhuma tabela. O estado da sala vem da função do servidor, que confere
+  a senha de cada jogador, e os avisos em tempo real usam um canal com nome secreto. Ninguém consegue listar salas abertas.
+- X1: limite de uso por endereço (criação de salas, entradas e palpites).
+- X1: no modo Emoji, o servidor só envia os emojis já revelados.
+
 ## [1.1.0] - 2026-11-27
 
 ### Adicionado

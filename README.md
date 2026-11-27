@@ -91,8 +91,6 @@ RUNEDLE/
 │   ├── config.js       # URL e chave pública do Supabase (X1)
 │   ├── app.js          # Lógica do jogo
 │   └── x1.js           # X1 ao vivo (cliente)
-├── supabase/           # Banco e função do servidor do X1 (veja supabase/README.md)
-├── tools/              # Scripts de manutenção
 ├── spells/             # Habilidades de cada campeão (carregadas sob demanda)
 ├── splash/             # Splash arts (carregadas sob demanda)
 └── docs/screenshots/   # Imagens deste README
@@ -111,7 +109,7 @@ RUNEDLE/
 
 ## X1 ao vivo
 
-O X1 precisa de um projeto no Supabase. O passo a passo está em [`supabase/README.md`](supabase/README.md). Sem configuração, o resto do jogo funciona normalmente e a aba X1 avisa que o modo não está disponível.
+O X1 usa um projeto no Supabase. O banco e a função do servidor que confere os palpites ficam fora deste repositório. Sem essa configuração, o resto do jogo funciona normalmente e a aba X1 avisa que o modo não está disponível.
 
 ## Dados
 

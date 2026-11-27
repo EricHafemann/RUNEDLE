@@ -13,7 +13,8 @@
 
   let sb = null;
   let libState = 'idle'; // idle | loading | ready | error
-  let sess = read('x1:session', null); // { code, playerId, token }
+  let sess = read('x1:session', null); // { code, playerId, token, channelKey }
+  if (sess && !sess.channelKey) sess = null; // sessão de versão antiga
   let room = null;
   let players = [];
   let clue = null; // { round, mode, clue }
@@ -24,6 +25,7 @@
   let channel = null;
   let ticker = null;
   let lastKey = '';
+  let poll = null;
 
   const meName = () => read('x1:name', '');
   const shareLink = (code) => `${location.origin}${location.pathname}#x1-${code}`;
@@ -68,49 +70,61 @@
     sess = null; room = null; players = []; clue = null; mine = null; answer = null;
     write('x1:session', null); write('x1:guesses', null);
     if (channel) { sb.removeChannel(channel); channel = null; }
+    clearInterval(poll);
   }
 
+  /* Tempo real: a função do servidor avisa num canal com nome secreto, conhecido só por quem está na sala.
+   * O navegador não lê nenhuma tabela: o estado vem sempre da função, que confere a senha do jogador. */
   function connect() {
     if (!sb || !sess) return;
     if (channel) sb.removeChannel(channel);
-    const code = sess.code;
-    channel = sb.channel(`x1-${code}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'x1_rooms', filter: `code=eq.${code}` }, refresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'x1_players', filter: `room_code=eq.${code}` }, refresh)
+    channel = sb.channel(`x1-${sess.code}-${sess.channelKey}`)
+      .on('broadcast', { event: 'sync' }, refresh)
       .subscribe();
+    clearInterval(poll);
+    poll = setInterval(refresh, 15000); // reserva, caso algum aviso se perca
     refresh();
   }
 
+  let refreshing = false;
   async function refresh() {
-    if (!sb || !sess) return;
+    if (!sb || !sess || refreshing) return;
+    refreshing = true;
     const code = sess.code;
-    const [{ data: r }, { data: ps }] = await Promise.all([
-      sb.from('x1_rooms').select('*').eq('code', code).maybeSingle(),
-      sb.from('x1_players').select('*').eq('room_code', code).order('joined_at'),
-    ]);
-    if (!sess || sess.code !== code) return;
-    if (!r || !(ps || []).some((p) => p.id === sess.playerId)) {
-      clearSession();
-      error = 'A sala foi encerrada.';
+    try {
+      let st;
+      try {
+        st = await call('state', { code, token: sess.token });
+      } catch (e) {
+        if (/não encontrada|não está nesta sala|vazia/i.test(e.message)) {
+          clearSession();
+          error = 'A sala foi encerrada.';
+          R.rerender();
+        }
+        return;
+      }
+      if (!sess || sess.code !== code) return;
+      const r = st.room;
+      const roundChanged = !room || room.round !== r.round;
+      room = r; players = st.players || [];
+      if (roundChanged) answer = null;
+      if (room.status !== 'lobby' && (!clue || clue.round !== room.round)) {
+        try { clue = await call('clue', { code, token: sess.token }); } catch (e) { error = e.message; }
+      }
+      if (!mine || mine.code !== code || mine.round !== room.round) { mine = { code, round: room.round, list: [] }; write('x1:guesses', mine); }
+      if (room.status === 'finished' && !answer) {
+        try { answer = (await call('reveal', { code, token: sess.token })).answer; } catch { /* tenta de novo no próximo aviso */ }
+        if (room.mode === 'emoji') { try { clue = await call('clue', { code, token: sess.token }); } catch { /* mantém a pista */ } }
+      }
+      if (room.status === 'finished' && room.winner_id === sess.playerId && lastKey !== `${code}:${room.round}:won`) {
+        lastKey = `${code}:${room.round}:won`;
+        R.confetti();
+      }
+      tick();
       R.rerender();
-      return;
+    } finally {
+      refreshing = false;
     }
-    const roundChanged = !room || room.round !== r.round;
-    room = r; players = ps || [];
-    if (roundChanged) answer = null;
-    if (room.status !== 'lobby' && (!clue || clue.round !== room.round)) {
-      try { clue = await call('clue', { code, token: sess.token }); } catch (e) { error = e.message; }
-    }
-    if (!mine || mine.code !== code || mine.round !== room.round) { mine = { code, round: room.round, list: [] }; write('x1:guesses', mine); }
-    if (room.status === 'finished' && !answer) {
-      try { answer = (await call('reveal', { code, token: sess.token })).answer; } catch { /* tenta de novo no próximo aviso */ }
-    }
-    if (room.status === 'finished' && room.winner_id === sess.playerId && lastKey !== `${code}:${room.round}:won`) {
-      lastKey = `${code}:${room.round}:won`;
-      R.confetti();
-    }
-    tick();
-    R.rerender();
   }
 
   /* contagem regressiva antes da rodada */
@@ -178,9 +192,10 @@
     switch (room.mode) {
       case 'quote': return `<blockquote class="quote"><p>${esc(c.quote || '…')}</p></blockquote>`;
       case 'emoji': {
+        // o servidor só manda os emojis já revelados
         const em = c.emojis || [];
-        const shown = done ? em.length : Math.min(em.length, n + 1);
-        return `<div class="emojis">${em.map((e, i) => `<span class="${i < shown ? 'on pop' : ''}">${i < shown ? esc(e) : '?'}</span>`).join('')}</div>`;
+        const total = Math.max(c.total || 5, em.length);
+        return `<div class="emojis">${Array.from({ length: total }, (_, i) => `<span class="${i < em.length ? 'on pop' : ''}">${i < em.length ? esc(em[i]) : '?'}</span>`).join('')}</div>`;
       }
       case 'ability': return c.img ? `<div class="ability-frame"><img src="${c.img}" alt="Ícone da habilidade" style="${done ? '' : 'filter:grayscale(1)'}"></div>` : spinner('Carregando habilidade…');
       case 'splash': {
@@ -279,7 +294,7 @@
   function html(route) {
     if (!configured) {
       return `<div class="kicker"><b>X1 AO VIVO</b></div>
-        <section class="frame notice">O X1 ainda não foi configurado neste site. Ele precisa de um projeto no Supabase (veja <b>supabase/README.md</b> no repositório).</section>`;
+        <section class="frame notice">O X1 ainda não foi configurado neste site. Ele precisa de um projeto no Supabase configurado.</section>`;
     }
     if (libState === 'error') return '<section class="frame notice">Não foi possível carregar o X1. Verifique sua conexão. Na versão do jogo dentro do Claude o X1 não funciona, abra pelo site.</section>';
     loadLib();
@@ -304,7 +319,7 @@
       write('x1:name', String(f.get('name') || '').trim());
       act(async () => {
         const r = await call('create', { name: f.get('name'), mode: f.get('mode') });
-        saveSession({ code: r.code, playerId: r.playerId, token: r.token });
+        saveSession({ code: r.code, playerId: r.playerId, token: r.token, channelKey: r.channelKey });
         connect();
         if (location.hash !== '#x1') location.hash = 'x1';
       });
@@ -316,7 +331,7 @@
       write('x1:name', String(f.get('name') || '').trim());
       act(async () => {
         const r = await call('join', { name: f.get('name'), code: String(f.get('code') || '').toUpperCase() });
-        saveSession({ code: r.code, playerId: r.playerId, token: r.token });
+        saveSession({ code: r.code, playerId: r.playerId, token: r.token, channelKey: r.channelKey });
         connect();
         if (location.hash !== '#x1') location.hash = 'x1';
       });
@@ -377,6 +392,7 @@
         mine.list.forEach((g) => { g.fresh = false; });
         mine.list.unshift({ id: pick, correct: r.correct, cells: r.cells, fresh: true });
         write('x1:guesses', mine);
+        if (r.clue && clue) clue = { ...clue, clue: r.clue };
         if (r.correct) answer = pick;
       });
     };
