@@ -1,5 +1,5 @@
 /* Runedle — jogo diário de adivinhação de campeões (HTML + CSS + JavaScript puro).
- * Depende de js/data.js (CHAMPION_ROWS e QUOTES). */
+ * Depende de js/data.js (CHAMPION_ROWS, QUOTES, CHAMPION_TITLES) e js/icons.js. */
 (() => {
   'use strict';
 
@@ -11,6 +11,7 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
   const normalize = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const fmtDate = (key) => key.split('-').reverse().join('/');
 
   /* =========================================================
    * Campeões
@@ -40,19 +41,19 @@
   const BY_ID = Object.fromEntries(CHAMPIONS.map((c) => [c.id, c]));
 
   /* =========================================================
-   * Desafio diário (horário de Brasília, UTC-3)
+   * Desafio diário
+   * O dia do jogo vira às 21h de Brasília (00:00 UTC). A chave do dia é a data UTC.
    * ======================================================= */
-  const OFFSET_MS = -3 * 3600 * 1000;
   const DAY = 86400000;
   const EPOCH = Date.UTC(2024, 0, 1);
+  const CAL_START = '2026-01-01'; // primeiro dia disponível no calendário
+  const RESET_LABEL = 'Reinicia às 21h (horário de Brasília)';
 
-  const dateKey = (now = Date.now()) => new Date(now + OFFSET_MS).toISOString().slice(0, 10);
+  const dateKey = (now = Date.now()) => new Date(now).toISOString().slice(0, 10);
   const dayNumber = (key) => Math.floor((Date.parse(key + 'T00:00:00Z') - EPOCH) / DAY) + 1;
-  const msUntilReset = (now = Date.now()) => {
-    const local = now + OFFSET_MS;
-    return Math.floor(local / DAY) * DAY + DAY - local;
-  };
+  const msUntilReset = (now = Date.now()) => Math.floor(now / DAY) * DAY + DAY - now;
   const prevKey = (key) => dateKey(Date.parse(key + 'T12:00:00Z') - DAY);
+  const isValidKey = (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && !Number.isNaN(Date.parse(k + 'T00:00:00Z')) && dateKey(Date.parse(k + 'T12:00:00Z')) === k;
 
   /* hash determinístico (cyrb53): mesmo resultado em qualquer navegador */
   function hash(str) {
@@ -93,7 +94,7 @@
   }
 
   /* =========================================================
-   * LocalStorage (partidas, estatísticas, histórico)
+   * LocalStorage
    * ======================================================= */
   const PREFIX = 'runedle:v1:';
   function read(key, fallback) {
@@ -106,11 +107,14 @@
     try { localStorage.setItem(PREFIX + key, JSON.stringify(value)); } catch { /* sem armazenamento: o jogo continua */ }
   }
 
+  /* partida de um modo em um dia (versões antigas guardavam só a do dia em game:<modo>) */
   function loadGame(mode, key) {
-    const g = read(`game:${mode}`, null);
-    return g && g.dateKey === key ? g : { dateKey: key, guesses: [], status: 'playing' };
+    const g = read(`game:${mode}:${key}`, null);
+    if (g) return g;
+    const legacy = read(`game:${mode}`, null);
+    return legacy && legacy.dateKey === key ? legacy : { dateKey: key, guesses: [], status: 'playing' };
   }
-  const saveGame = (mode, g) => write(`game:${mode}`, g);
+  const saveGame = (mode, g) => write(`game:${mode}:${g.dateKey}`, g);
 
   function loadStats(mode) {
     const s = read(`stats:${mode}`, { played: 0, wins: 0, currentStreak: 0, maxStreak: 0, distribution: {} });
@@ -121,6 +125,13 @@
 
   const distKey = (n) => (n >= 10 ? '10+' : String(n));
 
+  function addHistory(entry) {
+    const history = read('history', []);
+    history.unshift(entry);
+    write('history', history.slice(0, 300));
+  }
+
+  /* resultado do desafio do dia: conta para estatísticas e sequência */
   function recordResult(mode, key, championId, won, attempts) {
     const s = loadStats(mode);
     if (s.lastPlayedKey === key) return; // uma partida por modo por dia
@@ -133,20 +144,16 @@
       s.lastWonKey = key;
       const d = distKey(attempts);
       s.distribution[d] = (s.distribution[d] || 0) + 1;
+      const days = read('days', []);
+      if (!days.includes(key)) { days.push(key); write('days', days.slice(-800)); }
     } else {
       s.currentStreak = 0;
     }
     write(`stats:${mode}`, s);
-    if (won) {
-      const days = read('days', []);
-      if (!days.includes(key)) { days.push(key); write('days', days.slice(-800)); }
-    }
-    const history = read('history', []);
-    history.unshift({ dateKey: key, mode, championId, attempts, won });
-    write('history', history.slice(0, 200));
+    addHistory({ dateKey: key, mode, championId, attempts, won });
   }
 
-  /* Sequência diária: dias seguidos em que você venceu pelo menos um desafio.
+  /* Sequência diária: dias seguidos em que você venceu pelo menos um desafio no próprio dia.
    * Vale até o fim de hoje se você ganhou ontem e ainda não jogou hoje. */
   function dailyStreak() {
     const days = new Set(read('days', []));
@@ -162,15 +169,20 @@
     return { current, best, wonToday: days.has(today), week };
   }
 
+  /* modo infinito: estatísticas próprias */
+  const loadInf = () => read('inf:stats', { streak: 0, best: 0, played: 0, wins: 0 });
+
   /* =========================================================
-   * Imagens dos campeões (arquivos locais, baixados do Data Dragon)
-   * img/champion/<id>.jpg · splash/<id>.jpg · spells/<id>.js
+   * Imagens
+   * Ícones, habilidades e splash padrão ficam no projeto (funcionam offline).
+   * As skins vêm do Data Dragon da Riot quando há internet; sem acesso, usa a splash padrão.
    * ======================================================= */
   const iconUrl = (id) => (typeof CHAMPION_ICONS !== 'undefined' && CHAMPION_ICONS[id]) || `img/champion/${id}.jpg`;
-  const splashUrl = (id) => `splash/${id}.jpg`;
+  const localSplash = (id) => `splash/${id}.jpg`;
   const titleOf = (id) => (typeof CHAMPION_TITLES !== 'undefined' && CHAMPION_TITLES[id]) || '';
+  const DD = 'https://ddragon.leagueoflegends.com';
 
-  /* habilidades: cada spells/<id>.js chama RUNEDLE_SPELLS({...}); funciona até abrindo o arquivo direto */
+  /* habilidades: cada spells/<id>.js chama RUNEDLE_SPELLS({...}) */
   const SPELLS = {};
   window.RUNEDLE_SPELLS = (data) => { SPELLS[data.id] = { status: 'ready', data }; render(); };
 
@@ -183,6 +195,46 @@
     document.body.appendChild(tag);
     return SPELLS[id];
   }
+
+  /* skins (Data Dragon). status: loading | online | offline */
+  const SKINS = {};
+  let ddVersion = null;
+
+  async function fetchJSON(url) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(String(res.status));
+      return await res.json();
+    } finally { clearTimeout(t); }
+  }
+
+  function getSkins(id) {
+    if (SKINS[id]) return SKINS[id];
+    SKINS[id] = { status: 'loading', skins: [{ num: 0, name: 'default' }] };
+    (async () => {
+      try {
+        if (!ddVersion) ddVersion = (await fetchJSON(`${DD}/api/versions.json`))[0];
+        const json = await fetchJSON(`${DD}/cdn/${ddVersion}/data/pt_BR/champion/${id}.json`);
+        const skins = json.data[id].skins.map((s) => ({ num: s.num, name: s.name }));
+        SKINS[id] = { status: 'online', skins };
+      } catch {
+        SKINS[id] = { status: 'offline', skins: [{ num: 0, name: 'default' }] };
+      }
+      render();
+    })();
+    return SKINS[id];
+  }
+
+  function splashInfo(id, seedKey) {
+    const st = getSkins(id);
+    const skin = st.skins[Math.floor(rng(`splash-skin:${seedKey}`)() * st.skins.length)];
+    const src = st.status === 'online' ? `${DD}/cdn/img/champion/splash/${id}_${skin.num}.jpg` : localSplash(id);
+    return { st, skin, src };
+  }
+
+  const skinLabel = (name) => (name === 'default' ? 'Skin padrão' : name);
 
   function champIcon(id, size, extra = '') {
     const name = BY_ID[id] ? BY_ID[id].name : id;
@@ -217,6 +269,12 @@
     flag: svg('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
     up: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
     down: svg('<path d="M12 5v14M6 13l6 6 6-6"/>'),
+    left: svg('<path d="M15 6l-6 6 6 6"/>'),
+    right: svg('<path d="M9 6l6 6-6 6"/>'),
+    skip: svg('<path d="M5 5l9 7-9 7zM18 5v14"/>'),
+    calendar: svg('<rect x="3" y="5" width="18" height="16" rx="1"/><path d="M3 10h18M8 3v4M16 3v4"/>'),
+    infinite: svg('<path d="M7.5 8.5C5.6 8.5 4 10.1 4 12s1.6 3.5 3.5 3.5C10.5 15.5 13.5 8.5 16.5 8.5 18.4 8.5 20 10.1 20 12s-1.6 3.5-3.5 3.5C13.5 15.5 10.5 8.5 7.5 8.5Z"/>'),
+    dice: svg('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8.5 8.5h.01M15.5 15.5h.01M15.5 8.5h.01M8.5 15.5h.01M12 12h.01"/>'),
     send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
     classic: svg('<path d="M12 2 21 7v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/>'),
     quote: svg('<path d="M4 5h16v11H9l-5 4z"/><path d="M9 9h.01M12 9h.01M15 9h.01"/>'),
@@ -227,7 +285,7 @@
 
   const spinner = (label = 'Carregando…') => `<div class="loading" role="status"><div class="spinner"></div>${label ? `<span>${esc(label)}</span>` : ''}</div>`;
   const errorBox = (msg, retryId) => `<div class="frame error-box"><p>${esc(msg)}</p>${
-    retryId ? `<button class="btn" data-action="retry-detail" data-id="${esc(retryId)}">Tentar de novo</button>` : ''}</div>`;
+    retryId ? `<button class="btn" data-action="retry-spells" data-id="${esc(retryId)}">Tentar de novo</button>` : ''}</div>`;
 
   /* =========================================================
    * Comparação do modo Classic
@@ -262,17 +320,21 @@
 
   /* =========================================================
    * Modos de jogo
+   * Cada modo usa g.dateKey como semente: no diário é a data; no infinito, um id aleatório.
    * ======================================================= */
   const QUOTE_POOL = CHAMPIONS.filter((c) => QUOTES[c.id] && QUOTES[c.id].length);
   const KEYS = ['Q', 'W', 'E', 'R'];
-  const prefs = { gray: read('pref:ability-gray', false), rotate: read('pref:ability-rotate', false) };
+  const prefs = {
+    gray: read('pref:ability-gray', false),
+    rotate: read('pref:ability-rotate', false),
+    splashGray: read('pref:splash-gray', true),
+  };
   const loadedImgs = new Set();
 
   const MODES = [
     {
-      id: 'classic', name: 'Classic', desc: 'Pistas a cada tentativa',
-      heading: 'Adivinhe o campeão de hoje',
-      target: (k) => pickDaily(CHAMPIONS, 'classic', k),
+      id: 'classic', name: 'Classic', desc: 'Pistas a cada tentativa', pool: CHAMPIONS,
+      heading: 'Adivinhe o campeão',
       clue: () => `
         <p style="margin:0;color:var(--gold-200)">Digite qualquer campeão. As cores mostram o quanto cada característica se aproxima do campeão secreto.</p>
         <div class="legend">
@@ -290,9 +352,8 @@
       }).join('\n') + (g.guesses.length > 8 ? `\n+${g.guesses.length - 8} tentativas` : ''),
     },
     {
-      id: 'quote', name: 'Quote', desc: 'Adivinhe pela fala',
+      id: 'quote', name: 'Quote', desc: 'Adivinhe pela fala', pool: QUOTE_POOL,
       heading: 'Qual campeão diz',
-      target: (k) => pickDaily(QUOTE_POOL, 'quote', k),
       clue: (g, t) => {
         const lines = QUOTES[t.id];
         const line = lines[Math.floor(rng(`quote-line:${g.dateKey}`)() * lines.length)];
@@ -304,9 +365,8 @@
       ],
     },
     {
-      id: 'ability', name: 'Ability', desc: 'Adivinhe pela habilidade',
+      id: 'ability', name: 'Ability', desc: 'Adivinhe pela habilidade', pool: CHAMPIONS,
       heading: 'De qual campeão é esta habilidade?',
-      target: (k) => pickDaily(CHAMPIONS, 'ability', k),
       clue: (g, t) => {
         const d = getSpells(t.id);
         if (d.status === 'loading') return spinner('Carregando habilidade…');
@@ -314,15 +374,21 @@
         const { keyIdx, rotation } = abilitySeed(g.dateKey);
         const spell = d.data.spells[keyIdx];
         const done = g.status !== 'playing';
+        // a tecla só aparece depois do bônus (ou se a pessoa desistiu, quando não há bônus)
+        const bonusPending = g.status === 'won' && !(g.bonus && g.bonus.answered);
         const style = done ? '' : `transform:${prefs.rotate ? `rotate(${rotation}deg)` : 'none'};filter:${prefs.gray ? 'grayscale(1)' : 'none'}`;
-        return `
-          <div class="ability-frame"><img src="${spell.img}" alt="Ícone da habilidade" style="${style}"></div>
-          ${done
-            ? `<p style="margin:12px 0 0"><b class="title" style="font-size:18px;margin-right:8px">${KEYS[keyIdx]}</b>${esc(spell.name)}</p>`
-            : `<div class="toggles">
-                <label><input type="checkbox" data-pref="gray" ${prefs.gray ? 'checked' : ''}>Preto e branco</label>
-                <label><input type="checkbox" data-pref="rotate" ${prefs.rotate ? 'checked' : ''}>Girar ícone</label>
-              </div>`}`;
+        let footer;
+        if (!done) {
+          footer = `<div class="toggles">
+              <label><input type="checkbox" data-pref="gray" ${prefs.gray ? 'checked' : ''}>Preto e branco</label>
+              <label><input type="checkbox" data-pref="rotate" ${prefs.rotate ? 'checked' : ''}>Girar ícone</label>
+            </div>`;
+        } else if (bonusPending) {
+          footer = '<p class="muted" style="margin:12px 0 0">Responda o bônus abaixo para ver qual é a habilidade.</p>';
+        } else {
+          footer = `<p style="margin:12px 0 0"><b class="title" style="font-size:18px;margin-right:8px">${KEYS[keyIdx]}</b>${esc(spell.name)}</p>`;
+        }
+        return `<div class="ability-frame"><img src="${spell.img}" alt="Ícone da habilidade" style="${style}"></div>${footer}`;
       },
       hints: (t) => [{ label: 'Posição', at: 5, html: `<p style="margin:0">${esc(t.positions.join(' · '))}</p>` }],
       bonus: (g, t) => {
@@ -339,9 +405,8 @@
       },
     },
     {
-      id: 'emoji', name: 'Emoji', desc: 'Adivinhe pelos emojis',
+      id: 'emoji', name: 'Emoji', desc: 'Adivinhe pelos emojis', pool: CHAMPIONS,
       heading: 'Qual campeão estes emojis representam?',
-      target: (k) => pickDaily(CHAMPIONS, 'emoji', k),
       clue: (g, t) => {
         const shown = g.status !== 'playing' ? t.emojis.length : Math.min(t.emojis.length, g.guesses.length + 1);
         const boxes = t.emojis.map((e, i) => `<span class="${i < shown ? 'on pop' : ''}">${i < shown ? esc(e) : '?'}</span>`).join('');
@@ -351,29 +416,57 @@
       hints: (t) => [{ label: 'Região', at: 6, html: `<p style="margin:0">${esc(t.regions.join(' · '))}</p>` }],
     },
     {
-      id: 'splash', name: 'Splash', desc: 'Adivinhe pela splash art',
+      id: 'splash', name: 'Splash', desc: 'Adivinhe pela splash art', pool: CHAMPIONS,
       heading: 'De qual campeão é esta splash art?',
-      target: (k) => pickDaily(CHAMPIONS, 'splash', k),
       clue: (g, t) => {
+        const { st, skin, src } = splashInfo(t.id, g.dateKey);
+        if (st.status === 'loading') return spinner('Carregando splash art…');
         const r = rng(`splash:${g.dateKey}`);
         const ox = 25 + r() * 50;
         const oy = 20 + r() * 45;
         const done = g.status !== 'playing';
         const zoom = done ? 1 : Math.max(1.4, 6 - g.guesses.length * 0.55);
-        const src = splashUrl(t.id);
+        const gray = !done && prefs.splashGray;
         const loaded = loadedImgs.has(src);
+        const bonusPending = g.status === 'won' && skinBonusAvailable(st) && !(g.bonus && g.bonus.answered);
+        let footer;
+        if (!done) {
+          footer = `<div class="toggles">
+              <label><input type="checkbox" data-pref="splashGray" ${prefs.splashGray ? 'checked' : ''}>Preto e branco</label>
+            </div>
+            <p class="muted small" style="margin:4px 0 0">Cada erro afasta o zoom e revela mais da imagem.</p>`;
+        } else if (bonusPending) {
+          footer = '<p class="muted" style="margin:12px 0 0">Responda o bônus abaixo para ver o nome da skin.</p>';
+        } else {
+          footer = `<p style="margin:12px 0 0">Skin: <b>${esc(skinLabel(skin.name))}</b></p>`;
+        }
         return `
           <div class="splash">
             ${loaded ? '' : '<div class="spinner"></div>'}
-            <img src="${esc(src)}" alt="Trecho da splash art" draggable="false" class="${loaded ? 'loaded' : ''}" data-splash
-              style="transform:scale(${zoom});transform-origin:${ox}% ${oy}%">
-          </div>
-          ${done ? '' : '<p class="muted small" style="margin:12px 0 0">Cada erro afasta o zoom e revela mais da imagem.</p>'}`;
+            <img src="${esc(src)}" alt="Trecho da splash art" draggable="false" class="${loaded ? 'loaded' : ''}" data-splash data-champ="${esc(t.id)}"
+              style="transform:scale(${zoom});transform-origin:${ox}% ${oy}%;filter:${gray ? 'grayscale(1)' : 'none'}">
+          </div>${footer}`;
       },
       hints: (t) => [{ label: 'Região', at: 5, html: `<p style="margin:0">${esc(t.regions.join(' · '))}</p>` }],
+      bonus: (g, t) => {
+        const st = SKINS[t.id];
+        if (g.status !== 'won' || !skinBonusAvailable(st)) return '';
+        const { skin } = splashInfo(t.id, g.dateKey);
+        const rr = rng(`splash-opt:${g.dateKey}`);
+        const others = st.skins.filter((s) => s.num !== skin.num).sort(() => rr() - 0.5).slice(0, 3);
+        const options = [...others, skin].sort(() => rr() - 0.5);
+        const answered = g.bonus && g.bonus.answered;
+        const btns = options.map((o) => {
+          const cls = !answered ? '' : o.num === skin.num ? 'right' : g.bonus.choice === String(o.num) ? 'wrong' : 'dim';
+          return `<button class="btn ${cls}" style="font-size:12px" ${answered ? 'disabled' : ''} data-action="bonus" data-choice="${o.num}" data-correct="${o.num === skin.num}">${esc(skinLabel(o.name))}</button>`;
+        }).join('');
+        return `<div class="bonus"><p>Bônus: qual é a skin?</p><div class="opts">${btns}</div></div>`;
+      },
     },
   ];
   const MODE_BY_ID = Object.fromEntries(MODES.map((m) => [m.id, m]));
+
+  const skinBonusAvailable = (st) => !!st && st.status === 'online' && st.skins.length >= 2;
 
   function abilitySeed(key) {
     const r = rng(`ability:${key}`);
@@ -406,15 +499,85 @@
   }
 
   /* =========================================================
-   * Estado da tela
+   * Sessões: diário, dia do calendário e infinito
+   * Todas expõem a mesma interface para a tela de jogo.
+   * ======================================================= */
+  function dailySession(mode, key) {
+    const m = MODE_BY_ID[mode];
+    return {
+      kind: key === currentKey ? 'daily' : 'archive',
+      mode: m,
+      key,
+      target: pickDaily(m.pool, mode, key),
+      game: () => loadGame(mode, key),
+      save: (g) => saveGame(mode, g),
+      finish(g, won) {
+        if (this.kind === 'daily') {
+          recordResult(mode, key, this.target.id, won, g.guesses.length);
+        } else {
+          g.late = true; // jogado depois do dia: não conta para estatísticas nem sequência
+          addHistory({ dateKey: key, mode, championId: this.target.id, attempts: g.guesses.length, won, late: true });
+        }
+      },
+    };
+  }
+
+  const INF_MODES = ['classic', 'quote', 'ability', 'emoji', 'splash'];
+
+  function newInfiniteRound(prevTargetId) {
+    const choice = read('inf:mode', 'random');
+    const mode = choice === 'random' ? INF_MODES[Math.floor(Math.random() * INF_MODES.length)] : choice;
+    const pool = MODE_BY_ID[mode].pool.filter((c) => c.id !== prevTargetId);
+    const target = pool[Math.floor(Math.random() * pool.length)];
+    const round = { mode, targetId: target.id, dateKey: `inf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, guesses: [], status: 'playing' };
+    write('inf:round', round);
+    return round;
+  }
+
+  function infiniteSession() {
+    let round = read('inf:round', null);
+    if (!round || !MODE_BY_ID[round.mode] || !BY_ID[round.targetId]) round = newInfiniteRound();
+    return {
+      kind: 'infinite',
+      mode: MODE_BY_ID[round.mode],
+      key: round.dateKey,
+      target: BY_ID[round.targetId],
+      game: () => read('inf:round', round),
+      save: (g) => write('inf:round', g),
+      finish(g, won) {
+        const s = loadInf();
+        s.played++;
+        if (won) { s.wins++; s.streak++; s.best = Math.max(s.best, s.streak); } else { s.streak = 0; }
+        write('inf:stats', s);
+      },
+    };
+  }
+
+  /* =========================================================
+   * Rotas
+   * #classic … #splash → desafio de hoje · #infinito · #calendario · #dia-AAAA-MM-DD-modo
    * ======================================================= */
   let currentKey = dateKey();
   let route = parseRoute();
   let view = { openHint: null, animateIdx: -1 };
+  let calMonth = currentKey.slice(0, 7);
 
   function parseRoute() {
     const h = location.hash.replace('#', '');
-    return MODE_BY_ID[h] ? h : 'home';
+    if (MODE_BY_ID[h]) return { name: 'mode', mode: h, key: currentKey };
+    if (h === 'infinito') return { name: 'infinite' };
+    if (h === 'calendario') return { name: 'calendar' };
+    const m = /^dia-(\d{4}-\d{2}-\d{2})-(\w+)$/.exec(h);
+    if (m && isValidKey(m[1]) && MODE_BY_ID[m[2]] && m[1] >= CAL_START && m[1] <= currentKey) return { name: 'mode', mode: m[2], key: m[1] };
+    return { name: 'home' };
+  }
+
+  const dayHash = (key, mode) => (key === currentKey ? `#${mode}` : `#dia-${key}-${mode}`);
+
+  function currentSession() {
+    if (route.name === 'infinite') return infiniteSession();
+    if (route.name === 'mode') return dailySession(route.mode, route.key);
+    return null;
   }
 
   /* =========================================================
@@ -424,8 +587,13 @@
 
   function render() {
     renderHeader();
-    app.innerHTML = route === 'home' ? homeHTML() : modeHTML(MODE_BY_ID[route]);
-    if (route !== 'home') bindMode(MODE_BY_ID[route]);
+    let html;
+    if (route.name === 'home') html = homeHTML();
+    else if (route.name === 'calendar') html = calendarHTML();
+    else html = sessionHTML(currentSession());
+    app.innerHTML = html;
+    if (route.name === 'calendar') bindCalendar();
+    else if (route.name !== 'home') bindSession(currentSession());
     view.animateIdx = -1; // só a tentativa recém-feita anima
   }
 
@@ -435,21 +603,46 @@
     badge.innerHTML = `${ICON.fire}<b>${st.current}</b>`;
     badge.className = `streak-badge ${st.current ? 'on' : ''} ${st.wonToday ? 'today' : ''}`;
     badge.title = `Sequência diária: ${plural(st.current, 'dia')}`;
-    document.body.classList.toggle('in-mode', route !== 'home');
-    $('#btn-home').hidden = route === 'home';
+    document.body.classList.toggle('in-mode', route.name !== 'home');
+    $('#btn-home').hidden = route.name === 'home';
     const tabs = $('#mode-tabs');
-    tabs.hidden = route === 'home';
-    if (route === 'home') return;
+    const showTabs = route.name === 'mode' && route.key === currentKey;
+    tabs.hidden = !showTabs;
+    if (!showTabs) return;
     tabs.innerHTML = MODES.map((m) => {
-      const st = loadGame(m.id, currentKey).status;
-      return `<a href="#${m.id}" class="mode-tab ${route === m.id ? 'active' : ''}" ${route === m.id ? 'aria-current="page"' : ''} title="${m.name}">
-        ${ICON[m.id]}<span class="lbl">${m.name}</span>${st !== 'playing' ? `<span class="dot ${st}"></span>` : ''}</a>`;
+      const s = loadGame(m.id, currentKey).status;
+      const active = route.mode === m.id;
+      return `<a href="#${m.id}" class="mode-tab ${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} title="${m.name}">
+        ${ICON[m.id]}<span class="lbl">${m.name}</span>${s !== 'playing' ? `<span class="dot ${s}"></span>` : ''}</a>`;
     }).join('');
+  }
+
+  function streakCard() {
+    const st = dailyStreak();
+    const names = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+    const week = st.week.map((d) => {
+      const wd = names[new Date(d.key + 'T12:00:00Z').getUTCDay()];
+      return `<span class="day ${d.won ? 'won' : ''} ${d.key === currentKey ? 'now' : ''}"><i>${d.won ? ICON.fire : ''}</i><small>${wd}</small></span>`;
+    }).join('');
+    const msg = st.wonToday ? 'Desafio de hoje concluído. Volte às 21h!'
+      : st.current ? 'Vença um desafio hoje para manter a sequência.'
+      : 'Vença um desafio hoje para começar uma sequência.';
+    return `
+      <section class="frame streak-card">
+        <div class="streak-main">
+          <span class="flame ${st.current ? 'on' : ''}">${ICON.fire}</span>
+          <div><b>${st.current}</b><span>${st.current === 1 ? 'dia seguido' : 'dias seguidos'}</span></div>
+          <div class="best"><small>Recorde</small><b>${st.best}</b></div>
+        </div>
+        <div class="week">${week}</div>
+        <p>${msg}</p>
+      </section>`;
   }
 
   function homeHTML() {
     const games = MODES.map((m) => ({ m, g: loadGame(m.id, currentKey), s: loadStats(m.id) }));
     const done = games.filter((x) => x.g.status !== 'playing').length;
+    const inf = loadInf();
     const cards = games.map(({ m, g, s }, i) => {
       const st = g.status === 'won' ? '<span class="won">Concluído</span>'
         : g.status === 'lost' ? '<span class="lost">Derrota</span>'
@@ -472,37 +665,62 @@
         <span>${done}/${MODES.length}</span>
       </div>
       <nav class="mode-list">${cards}</nav>
+      <div class="extra-modes">
+        <a href="#infinito" class="frame extra-card">
+          <span class="ico">${ICON.infinite}</span>
+          <span class="txt"><b>Modo infinito</b><small>Rodadas aleatórias sem limite</small></span>
+          <span class="st">${inf.streak ? `<span class="streak-num">${ICON.fire}${inf.streak}</span>` : ''}</span>
+        </a>
+        <a href="#calendario" class="frame extra-card">
+          <span class="ico">${ICON.calendar}</span>
+          <span class="txt"><b>Calendário</b><small>Jogue desafios de outros dias</small></span>
+        </a>
+      </div>
       <div class="countdown">
         <div class="label">Novos campeões em</div>
         <div class="time" data-countdown>${formatCountdown(msUntilReset())}</div>
-        <div class="small" style="color:var(--gold-500)">Reinicia à meia-noite (horário de Brasília)</div>
+        <div class="small" style="color:var(--gold-500)">${RESET_LABEL}</div>
       </div>`;
   }
 
-  function streakCard() {
-    const st = dailyStreak();
-    const names = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
-    const week = st.week.map((d) => {
-      const wd = names[new Date(d.key + 'T12:00:00Z').getUTCDay()];
-      return `<span class="day ${d.won ? 'won' : ''} ${d.key === currentKey ? 'now' : ''}"><i>${d.won ? ICON.fire : ''}</i><small>${wd}</small></span>`;
-    }).join('');
-    const msg = st.wonToday ? 'Desafio de hoje concluído. Volte amanhã!'
-      : st.current ? 'Vença um desafio hoje para manter a sequência.'
-      : 'Vença um desafio hoje para começar uma sequência.';
-    return `
-      <section class="frame streak-card">
-        <div class="streak-main">
-          <span class="flame ${st.current ? 'on' : ''}">${ICON.fire}</span>
-          <div><b>${st.current}</b><span>${st.current === 1 ? 'dia seguido' : 'dias seguidos'}</span></div>
-          <div class="best"><small>Recorde</small><b>${st.best}</b></div>
-        </div>
-        <div class="week">${week}</div>
-        <p>${msg}</p>
-      </section>`;
+  /* barra acima da pista: dia do calendário ou painel do modo infinito */
+  function sessionTopHTML(s) {
+    if (s.kind === 'archive') {
+      const chips = MODES.map((m) => {
+        const st = loadGame(m.id, s.key).status;
+        return `<a href="${dayHash(s.key, m.id)}" class="chip ${m.id === s.mode.id ? 'on' : ''}" title="${m.name}">${ICON[m.id]}<span class="lbl">${m.name}</span>${
+          st !== 'playing' ? `<span class="dot ${st}"></span>` : ''}</a>`;
+      }).join('');
+      return `
+        <section class="frame top-panel">
+          <div class="top-row">
+            <a href="#calendario" class="btn-link">${ICON.left} Calendário</a>
+            <b>Desafio de ${fmtDate(s.key)} <span class="muted">· #${dayNumber(s.key)}</span></b>
+          </div>
+          <div class="chips">${chips}</div>
+          <p class="muted small" style="margin:0">Jogando depois do dia: não conta para a sequência nem para as estatísticas.</p>
+        </section>`;
+    }
+    if (s.kind === 'infinite') {
+      const inf = loadInf();
+      const choice = read('inf:mode', 'random');
+      const opts = [['random', 'Aleatório', ICON.dice], ...MODES.map((m) => [m.id, m.name, ICON[m.id]])];
+      const chips = opts.map(([id, name, ic]) => `<button class="chip ${choice === id ? 'on' : ''}" data-action="inf-mode" data-mode="${id}" title="${name}">${ic}<span class="lbl">${name}</span></button>`).join('');
+      return `
+        <section class="frame top-panel">
+          <div class="top-row">
+            <b class="title" style="font-size:18px">${ICON.infinite.replace('<svg', '<svg width="22" height="22" style="vertical-align:-5px;margin-right:6px"')}Modo infinito</b>
+            <span class="inf-stats"><span class="streak-num">${ICON.fire}${inf.streak}</span><small>seguidas</small><span class="sep"></span><small>Recorde</small><b>${inf.best}</b></span>
+          </div>
+          <div class="chips">${chips}</div>
+          <p class="muted small" style="margin:0">Rodada atual: <b style="color:var(--gold-100)">${s.mode.name}</b>. A escolha vale a partir da próxima rodada.</p>
+        </section>`;
+    }
+    return '';
   }
 
-  function hintsHTML(mode, g, t) {
-    const hints = mode.hints ? mode.hints(t) : [];
+  function hintsHTML(s, g) {
+    const hints = s.mode.hints ? s.mode.hints(s.target) : [];
     if (!hints.length || g.status !== 'playing') return '';
     const n = g.guesses.length;
     const btns = hints.map((h, i) => {
@@ -520,42 +738,56 @@
     return `<div class="hints">${btns}</div>${body}`;
   }
 
-  function resultHTML(mode, g, t) {
+  function resultHTML(s, g) {
     const won = g.status === 'won';
-    const idx = MODES.indexOf(mode);
-    const next = MODES[(idx + 1) % MODES.length];
+    const t = s.target;
     const title = titleOf(t.id);
+    let actions, extra = '';
+    if (s.kind === 'infinite') {
+      const inf = loadInf();
+      extra = `<p class="streak-line">${ICON.fire}${won ? `Sequência no infinito: <b>${inf.streak}</b>` : 'Sequência zerada'}<span class="muted" style="margin-left:6px">· recorde ${inf.best}</span></p>`;
+      actions = `<button class="btn btn-gold" data-action="next-round" id="next-round">Próxima rodada →</button>`;
+    } else {
+      const idx = MODES.indexOf(s.mode);
+      const next = MODES[(idx + 1) % MODES.length];
+      if (s.kind === 'daily' && won) extra = `<p class="streak-line">${ICON.fire}Sequência diária: <b>${plural(dailyStreak().current, 'dia')}</b></p>`;
+      actions = `<button class="btn" data-action="share">${ICON.share.replace('<svg', '<svg width="20" height="20"')} Compartilhar</button>
+        <a class="btn btn-gold" href="${dayHash(s.key, next.id)}">Próximo: ${next.name} →</a>`;
+    }
+    const footer = s.kind === 'daily'
+      ? `<div class="countdown"><div class="label">Próximo campeão em</div><div class="time" data-countdown>${formatCountdown(msUntilReset())}</div></div>`
+      : s.kind === 'archive' ? '<a href="#calendario" class="btn-link">Voltar ao calendário</a>' : '';
+    const giveUpText = s.kind === 'infinite' ? `Você pulou após ${plural(g.guesses.length, 'tentativa')}.` : `Você desistiu após ${plural(g.guesses.length, 'tentativa')}.`;
     return `
       <section class="frame result ${won ? 'won' : 'lost'}" aria-live="polite">
-        <h2>${won ? 'Vitória!' : 'Derrota'}</h2>
+        <h2>${won ? 'Vitória!' : s.kind === 'infinite' ? 'Rodada pulada' : 'Derrota'}</h2>
         <div class="who">
           ${champIcon(t.id, 80)}
           <div><span class="muted">${won ? 'Você adivinhou' : 'O campeão era'}</span><strong>${esc(t.name)}</strong>${title ? `<em>${esc(title)}</em>` : ''}</div>
         </div>
-        <p style="margin:0;color:var(--gold-200)">${won ? `Tentativas: ${g.guesses.length}` : `Você desistiu após ${plural(g.guesses.length, 'tentativa')}.`}</p>
-        ${won ? `<p class="streak-line">${ICON.fire}Sequência diária: <b>${plural(dailyStreak().current, 'dia')}</b></p>` : ''}
-        ${mode.bonus ? mode.bonus(g, t) : ''}
+        <p style="margin:0;color:var(--gold-200)">${won ? `Tentativas: ${g.guesses.length}` : giveUpText}</p>
+        ${extra}
+        ${s.mode.bonus ? s.mode.bonus(g, t) : ''}
         <div class="divider"></div>
-        <div class="actions">
-          <button class="btn" data-action="share">${ICON.share.replace('<svg', '<svg width="20" height="20"')} Compartilhar</button>
-          <a class="btn btn-gold" href="#${next.id}">Próximo: ${next.name} →</a>
-        </div>
+        <div class="actions">${actions}</div>
         <p class="toast" id="toast"></p>
-        <div class="countdown"><div class="label">Próximo campeão em</div><div class="time" data-countdown>${formatCountdown(msUntilReset())}</div></div>
+        ${footer}
       </section>`;
   }
 
-  function modeHTML(mode) {
-    const t = mode.target(currentKey);
-    const g = loadGame(mode.id, currentKey);
+  function sessionHTML(s) {
+    const g = s.game();
     const playing = g.status === 'playing';
+    const heading = s.kind === 'daily' && s.mode.id === 'classic' ? 'Adivinhe o campeão de hoje' : s.mode.heading;
+    const giveUpLabel = s.kind === 'infinite' ? `${ICON.skip} Pular (zera a sequência)` : `${ICON.flag} Desistir`;
     return `
+      ${sessionTopHTML(s)}
       <section class="frame clue">
-        <h1 class="title">${mode.heading}</h1>
-        ${mode.clue(g, t)}
+        <h1 class="title">${heading}</h1>
+        ${s.mode.clue(g, s.target)}
         <p class="attempts">Tentativas: <b>${g.guesses.length}</b></p>
       </section>
-      ${hintsHTML(mode, g, t)}
+      ${hintsHTML(s, g)}
       ${playing ? `
         <div class="search" id="search">
           <form autocomplete="off">
@@ -565,36 +797,105 @@
           </form>
           <ul class="frame suggestions" id="suggestions" role="listbox" hidden></ul>
         </div>
-        ${g.guesses.length ? `<div class="giveup"><button class="btn-link" data-action="giveup">${ICON.flag} Desistir</button></div>` : ''}
-      ` : resultHTML(mode, g, t)}
-      ${mode.guesses ? mode.guesses(g, t) : simpleGuessList(g, t)}`;
+        ${g.guesses.length || s.kind === 'infinite' ? `<div class="giveup"><button class="btn-link" data-action="giveup">${giveUpLabel}</button></div>` : ''}
+      ` : resultHTML(s, g)}
+      ${s.mode.guesses ? s.mode.guesses(g, s.target) : simpleGuessList(g, s.target)}`;
+  }
+
+  /* ---------- calendário ---------- */
+  const MONTHS = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+
+  function dayStatus(key) {
+    let onTime = 0, late = 0, lost = 0;
+    for (const m of MODES) {
+      const g = loadGame(m.id, key);
+      if (g.status === 'won') g.late ? late++ : onTime++;
+      else if (g.status === 'lost') lost++;
+    }
+    return { onTime, late, lost };
+  }
+
+  function calendarHTML() {
+    const [y, mo] = calMonth.split('-').map(Number);
+    const first = new Date(Date.UTC(y, mo - 1, 1));
+    const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+    const lead = first.getUTCDay();
+    const minMonth = CAL_START.slice(0, 7);
+    const maxMonth = currentKey.slice(0, 7);
+    let cells = '';
+    for (let i = 0; i < lead; i++) cells += '<span class="cal-cell empty"></span>';
+    for (let d = 1; d <= daysInMonth; d++) {
+      const key = `${calMonth}-${String(d).padStart(2, '0')}`;
+      const available = key >= CAL_START && key <= currentKey;
+      if (!available) { cells += `<span class="cal-cell off"><b>${d}</b></span>`; continue; }
+      const st = dayStatus(key);
+      const dots = [...Array(st.onTime).fill('won'), ...Array(st.late).fill('late'), ...Array(st.lost).fill('lost')];
+      while (dots.length < 5) dots.push('');
+      const complete = st.onTime + st.late === 5;
+      cells += `<a href="${dayHash(key, 'classic')}" class="cal-cell ${key === currentKey ? 'today' : ''} ${complete ? 'complete' : ''}" aria-label="Desafio de ${fmtDate(key)}">
+        <b>${d}</b><span class="dots">${dots.map((c) => `<i class="${c}"></i>`).join('')}</span></a>`;
+    }
+    return `
+      <section class="frame calendar">
+        <div class="cal-head">
+          <button class="icon-btn" data-action="cal-prev" aria-label="Mês anterior" ${calMonth <= minMonth ? 'disabled' : ''}>${ICON.left}</button>
+          <h1 class="title">${MONTHS[mo - 1][0].toUpperCase() + MONTHS[mo - 1].slice(1)} de ${y}</h1>
+          <button class="icon-btn" data-action="cal-next" aria-label="Próximo mês" ${calMonth >= maxMonth ? 'disabled' : ''}>${ICON.right}</button>
+        </div>
+        <div class="cal-grid">
+          ${['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((w) => `<span class="cal-wd">${w}</span>`).join('')}
+          ${cells}
+        </div>
+        <div class="cal-legend">
+          <span><i class="won"></i>Vencido no dia</span><span><i class="late"></i>Vencido depois</span><span><i class="lost"></i>Desistiu</span>
+        </div>
+        <p class="muted small" style="margin:0">Desafios de dias passados podem ser jogados quando quiser, mas não contam para a sequência diária nem para as estatísticas.</p>
+      </section>`;
+  }
+
+  function bindCalendar() {
+    app.querySelectorAll('[data-action^="cal-"]').forEach((b) => b.addEventListener('click', () => {
+      const [y, m] = calMonth.split('-').map(Number);
+      const d = new Date(Date.UTC(y, m - 1 + (b.dataset.action === 'cal-next' ? 1 : -1), 1));
+      calMonth = d.toISOString().slice(0, 7);
+      render();
+    }));
   }
 
   /* =========================================================
-   * Interação dentro de um modo
+   * Interação na tela de jogo
    * ======================================================= */
-  function bindMode(mode) {
-    const t = mode.target(currentKey);
-
+  function bindSession(s) {
     app.querySelectorAll('[data-action]').forEach((el) => {
       el.addEventListener('click', () => {
         const a = el.dataset.action;
-        const g = loadGame(mode.id, currentKey);
+        const g = s.game();
         if (a === 'hint') {
           const i = Number(el.dataset.i);
           view.openHint = view.openHint === i ? null : i;
           render();
         } else if (a === 'giveup') {
-          confirmGiveUp(mode, t);
+          confirmGiveUp(s);
         } else if (a === 'share') {
-          share(mode, g, t);
+          share(s, g);
         } else if (a === 'bonus') {
           if (g.bonus && g.bonus.answered) return;
           g.bonus = { answered: true, correct: el.dataset.correct === 'true', choice: el.dataset.choice };
-          saveGame(mode.id, g);
+          s.save(g);
           render();
-        } else if (a === 'retry-detail') {
+        } else if (a === 'retry-spells') {
           delete SPELLS[el.dataset.id];
+          render();
+        } else if (a === 'next-round') {
+          newInfiniteRound(s.target.id);
+          view = { openHint: null, animateIdx: -1 };
+          render();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else if (a === 'inf-mode') {
+          write('inf:mode', el.dataset.mode);
+          // sem tentativas ainda: já troca a rodada atual
+          if (g.status === 'playing' && !g.guesses.length) newInfiniteRound(s.target.id);
+          view = { openHint: null, animateIdx: -1 };
           render();
         }
       });
@@ -602,8 +903,9 @@
 
     app.querySelectorAll('[data-pref]').forEach((el) => {
       el.addEventListener('change', () => {
-        prefs[el.dataset.pref] = el.checked;
-        write(`pref:ability-${el.dataset.pref}`, el.checked);
+        const name = el.dataset.pref;
+        prefs[name] = el.checked;
+        write(name === 'splashGray' ? 'pref:splash-gray' : `pref:ability-${name}`, el.checked);
         render();
       });
     });
@@ -611,22 +913,29 @@
     const splash = app.querySelector('[data-splash]');
     if (splash) {
       const done = () => {
-        loadedImgs.add(splash.src);
+        loadedImgs.add(splash.getAttribute('src'));
         splash.classList.add('loaded');
-        const sp = splash.parentElement.querySelector('.spinner');
+        const sp = splash.parentElement && splash.parentElement.querySelector('.spinner');
         if (sp) sp.remove();
       };
       if (splash.complete && splash.naturalWidth) done();
       splash.addEventListener('load', done);
       splash.addEventListener('error', () => {
-        splash.parentElement.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px">${errorBox('A imagem não carregou.')}</div>`;
+        const id = splash.dataset.champ;
+        if (SKINS[id] && SKINS[id].status === 'online') {
+          // skin da Riot não carregou: volta para a splash padrão guardada no projeto
+          SKINS[id] = { status: 'offline', skins: [{ num: 0, name: 'default' }] };
+          render();
+        } else if (splash.parentElement) {
+          splash.parentElement.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px">${errorBox('A imagem não carregou.')}</div>`;
+        }
       });
     }
 
-    bindSearch(mode, t);
+    bindSearch(s);
   }
 
-  function bindSearch(mode, t) {
+  function bindSearch(s) {
     const input = $('#guess-input');
     if (!input) return;
     const list = $('#suggestions');
@@ -637,7 +946,7 @@
     const compute = () => {
       const q = normalize(input.value);
       if (!q) return [];
-      const used = loadGame(mode.id, currentKey).guesses;
+      const used = s.game().guesses;
       const pool = CHAMPIONS.filter((c) => !used.includes(c.id));
       const starts = pool.filter((c) => normalize(c.name).startsWith(q));
       const contains = pool.filter((c) => !starts.includes(c) && normalize(c.name).includes(q));
@@ -666,7 +975,7 @@
         box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
         return;
       }
-      makeGuess(mode, t, pick);
+      makeGuess(s, pick);
     };
 
     input.addEventListener('input', () => { items = compute(); active = 0; draw(); });
@@ -692,39 +1001,46 @@
     if (matchMedia('(pointer: fine)').matches) input.focus({ preventScroll: true });
   }
 
-  function makeGuess(mode, t, id) {
-    const g = loadGame(mode.id, currentKey);
+  function makeGuess(s, id) {
+    const g = s.game();
     if (g.status !== 'playing' || g.guesses.includes(id)) return;
     g.guesses.push(id);
     view.animateIdx = g.guesses.length - 1;
-    if (id === t.id) {
+    if (id === s.target.id) {
       g.status = 'won';
-      recordResult(mode.id, g.dateKey, t.id, true, g.guesses.length);
+      s.finish(g, true);
       confetti();
     }
-    saveGame(mode.id, g);
+    s.save(g);
     render();
     const input = $('#guess-input');
     if (input) input.focus({ preventScroll: true });
     if (g.status === 'won') {
       const res = app.querySelector('.result');
       if (res) res.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const next = $('#next-round');
+      if (next) next.focus({ preventScroll: true });
     }
   }
 
-  function confirmGiveUp(mode, t) {
-    openModal('Desistir do desafio?', `
-      <p style="color:var(--gold-200)">O campeão será revelado e a partida conta como derrota. Sua sequência de vitórias neste modo volta a zero.</p>
+  function confirmGiveUp(s) {
+    const infinite = s.kind === 'infinite';
+    const body = infinite
+      ? '<p style="color:var(--gold-200)">O campeão será revelado e sua sequência no modo infinito volta a zero.</p>'
+      : s.kind === 'archive'
+        ? '<p style="color:var(--gold-200)">O campeão será revelado. Como é um desafio de outro dia, isso não afeta suas estatísticas.</p>'
+        : '<p style="color:var(--gold-200)">O campeão será revelado e a partida conta como derrota. Sua sequência de vitórias neste modo volta a zero.</p>';
+    openModal(infinite ? 'Pular esta rodada?' : 'Desistir do desafio?', `${body}
       <div class="modal-actions">
         <button class="btn" data-close>Continuar tentando</button>
-        <button class="btn btn-gold" id="confirm-giveup">Desistir</button>
+        <button class="btn btn-gold" id="confirm-giveup">${infinite ? 'Pular' : 'Desistir'}</button>
       </div>`, (root) => {
       $('#confirm-giveup', root).addEventListener('click', () => {
-        const g = loadGame(mode.id, currentKey);
+        const g = s.game();
         if (g.status === 'playing') {
           g.status = 'lost';
-          recordResult(mode.id, g.dateKey, t.id, false, g.guesses.length);
-          saveGame(mode.id, g);
+          s.finish(g, false);
+          s.save(g);
         }
         closeModal();
         render();
@@ -732,15 +1048,15 @@
     });
   }
 
-  async function share(mode, g, t) {
-    const grid = mode.shareGrid ? mode.shareGrid(g, t) : g.guesses.map((id) => (id === t.id ? '🟩' : '🟥')).join('');
-    const text = `Runedle #${dayNumber(g.dateKey)} · ${mode.name}\n${
-      g.status === 'won' ? `Acertei em ${plural(g.guesses.length, 'tentativa')}` : 'Não consegui hoje'}\n${grid}${
+  async function share(s, g) {
+    const grid = s.mode.shareGrid ? s.mode.shareGrid(g, s.target) : g.guesses.map((id) => (id === s.target.id ? '🟩' : '🟥')).join('');
+    const text = `Runedle #${dayNumber(s.key)} · ${s.mode.name}${s.kind === 'archive' ? ` (${fmtDate(s.key)})` : ''}\n${
+      g.status === 'won' ? `Acertei em ${plural(g.guesses.length, 'tentativa')}` : 'Não consegui'}\n${grid}${
       g.bonus && g.bonus.answered ? `\nBônus: ${g.bonus.correct ? '✅' : '❌'}` : ''}`;
     const toast = $('#toast');
     let msg = 'Não foi possível copiar.';
     if (navigator.share && /Android|iPhone|iPad/i.test(navigator.userAgent)) {
-      try { await navigator.share({ text }); msg = 'Compartilhado!'; toast.textContent = msg; return; } catch { /* cancelado: tenta copiar */ }
+      try { await navigator.share({ text }); if (toast) toast.textContent = 'Compartilhado!'; return; } catch { /* cancelado: tenta copiar */ }
     }
     try {
       await navigator.clipboard.writeText(text);
@@ -807,28 +1123,34 @@
 
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modalRoot.firstElementChild) closeModal(); });
 
-  function statsBody(modeId) {
-    const s = loadStats(modeId);
+  function statsBody(tab) {
+    const tabs = [...MODES.map((m) => [m.id, m.name]), ['infinite', 'Infinito']];
+    const tabsHTML = `<div class="tabs" role="tablist">${tabs.map(([id, name]) => `<button role="tab" data-tab="${id}" aria-selected="${id === tab}" class="${id === tab ? 'on' : ''}">${name}</button>`).join('')}</div>`;
+    const tile = ([l, v]) => `<div class="tile"><b>${v}</b><small>${l}</small></div>`;
+    if (tab === 'infinite') {
+      const s = loadInf();
+      const rate = s.played ? Math.round((s.wins / s.played) * 100) : 0;
+      return `${tabsHTML}<div class="tiles">${[['Rodadas', s.played], ['Acertos', s.wins], ['Taxa de acerto', `${rate}%`], ['Sequência atual', s.streak], ['Maior sequência', s.best]].map(tile).join('')}</div>
+        <p class="muted">A sequência do modo infinito só zera quando você pula uma rodada.</p>`;
+    }
+    const s = loadStats(tab);
     const rate = s.played ? Math.round((s.wins / s.played) * 100) : 0;
     const buckets = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10+'];
     const max = Math.max(1, ...buckets.map((b) => s.distribution[b] || 0));
-    const tiles = [['Partidas', s.played], ['Vitórias', s.wins], ['Taxa de vitória', `${rate}%`], ['Sequência atual', s.currentStreak], ['Maior sequência', s.maxStreak]]
-      .map(([l, v]) => `<div class="tile"><b>${v}</b><small>${l}</small></div>`).join('');
     const dist = s.wins === 0
       ? '<p class="muted">Vença uma partida neste modo para ver a distribuição.</p>'
       : `<div class="dist">${buckets.map((b) => {
           const n = s.distribution[b] || 0;
           return `<div class="dist-row"><span>${b}</span><div><i class="${n ? 'has' : ''}" style="width:${Math.max(8, (n / max) * 100)}%">${n}</i></div></div>`;
         }).join('')}</div>`;
-    return `
-      <div class="tabs" role="tablist">${MODES.map((m) => `<button role="tab" data-tab="${m.id}" aria-selected="${m.id === modeId}" class="${m.id === modeId ? 'on' : ''}">${m.name}</button>`).join('')}</div>
-      <div class="tiles">${tiles}</div>
+    return `${tabsHTML}
+      <div class="tiles">${[['Partidas', s.played], ['Vitórias', s.wins], ['Taxa de vitória', `${rate}%`], ['Sequência atual', s.currentStreak], ['Maior sequência', s.maxStreak]].map(tile).join('')}</div>
       <h3 class="title" style="font-size:14px;margin-bottom:8px">Distribuição de tentativas</h3>
       ${dist}`;
   }
 
-  function openStats(modeId) {
-    openModal('Estatísticas', statsBody(modeId), function mount(root) {
+  function openStats(tab) {
+    openModal('Estatísticas', statsBody(tab), function mount(root) {
       root.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
         root.querySelector('.modal-body').innerHTML = statsBody(b.dataset.tab);
         mount(root);
@@ -844,7 +1166,7 @@
           <li>
             ${champIcon(e.championId, 40, e.won ? '' : 'gray')}
             <div class="info"><b>${esc(BY_ID[e.championId] ? BY_ID[e.championId].name : e.championId)}</b>
-              <small>${esc(MODE_BY_ID[e.mode] ? MODE_BY_ID[e.mode].name : e.mode)} · ${esc(e.dateKey.split('-').reverse().join('/'))}</small></div>
+              <small>${esc(MODE_BY_ID[e.mode] ? MODE_BY_ID[e.mode].name : e.mode)} · ${esc(fmtDate(e.dateKey))}${e.late ? ' · jogado depois' : ''}</small></div>
             <span class="res" style="color:${e.won ? '#86efac' : '#fca5a5'}">${e.won ? `${e.attempts} tent.` : 'Derrota'}</span>
           </li>`).join('')}</ul>`;
     openModal('Histórico de partidas', body);
@@ -852,7 +1174,7 @@
 
   function openHelp() {
     openModal('Como jogar', `
-      <p>Todo dia há um campeão secreto em cada um dos cinco modos. Ele é o mesmo para todos os jogadores e muda à meia-noite (horário de Brasília).</p>
+      <p>Todo dia há um campeão secreto em cada um dos cinco modos. Ele é o mesmo para todos os jogadores e muda às 21h (horário de Brasília).</p>
       <p><b style="color:var(--gold-200)">Classic:</b> cada tentativa compara gênero, posição, espécie, recurso, alcance, região e ano de lançamento.</p>
       <ul>
         <li><span class="sq bg-ok"></span>Verde: característica idêntica.</li>
@@ -860,10 +1182,11 @@
         <li><span class="sq bg-bad"></span>Vermelho: nada em comum.</li>
         <li>A seta no ano indica se o campeão secreto é mais recente (↑) ou mais antigo (↓).</li>
       </ul>
-      <p><b style="color:var(--gold-200)">Quote, Ability, Emoji e Splash:</b> descubra o campeão por uma fala, um ícone de habilidade, emojis ou um trecho da splash art. A cada erro a pista fica mais fácil.</p>
-      <p><b style="color:var(--gold-200)">Sequência diária:</b> cada dia em que você vence pelo menos um desafio soma 1. Se passar um dia sem vencer, ela volta a zero.</p>
-      <p>Tentativas são ilimitadas. Se travar, use “Desistir” para ver a resposta (conta como derrota).</p>
-      <p class="small" style="color:var(--gold-400)">Suas estatísticas ficam salvas neste navegador.</p>`);
+      <p><b style="color:var(--gold-200)">Quote, Ability, Emoji e Splash:</b> descubra o campeão por uma fala, um ícone de habilidade, emojis ou um trecho da splash art (que começa em preto e branco). A cada erro a pista fica mais fácil.</p>
+      <p><b style="color:var(--gold-200)">Sequência diária:</b> cada dia em que você vence pelo menos um desafio do dia soma 1. Se passar um dia sem vencer, ela volta a zero.</p>
+      <p><b style="color:var(--gold-200)">Modo infinito:</b> rodadas aleatórias sem limite, com sequência própria. Pular uma rodada zera essa sequência.</p>
+      <p><b style="color:var(--gold-200)">Calendário:</b> jogue o desafio de qualquer dia passado. Esses jogos não contam para a sequência diária nem para as estatísticas.</p>
+      <p class="small" style="color:var(--gold-400)">Seu progresso fica salvo neste navegador.</p>`);
   }
 
   /* =========================================================
@@ -874,24 +1197,29 @@
   $('#btn-stats').innerHTML = ICON.stats;
   $('#btn-help').innerHTML = ICON.help;
   $('#btn-history').addEventListener('click', openHistory);
-  $('#btn-stats').addEventListener('click', () => openStats(route === 'home' ? 'classic' : route));
+  $('#btn-stats').addEventListener('click', () => {
+    const s = currentSession();
+    openStats(s ? (s.kind === 'infinite' ? 'infinite' : s.mode.id) : 'classic');
+  });
   $('#btn-help').addEventListener('click', openHelp);
   $('#streak-badge').addEventListener('click', () => { location.hash = ''; });
 
   window.addEventListener('hashchange', () => {
     route = parseRoute();
     view = { openHint: null, animateIdx: -1 };
+    if (route.name === 'mode' && route.key !== currentKey && location.hash === `#dia-${currentKey}-${route.mode}`) location.hash = route.mode;
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  /* relógio: atualiza a contagem e vira o dia à meia-noite */
+  /* relógio: atualiza a contagem e vira o dia às 21h */
   setInterval(() => {
     const txt = formatCountdown(msUntilReset());
     document.querySelectorAll('[data-countdown]').forEach((el) => { el.textContent = txt; });
     const k = dateKey();
     if (k !== currentKey) {
       currentKey = k;
+      route = parseRoute();
       view = { openHint: null, animateIdx: -1 };
       render();
     }
